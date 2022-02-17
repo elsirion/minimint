@@ -1,6 +1,6 @@
 mod db;
 pub mod gateway;
-mod outgoing;
+pub mod outgoing;
 
 use crate::api::ApiError;
 use crate::ln::db::{OutgoingPaymentKey, OutgoingPaymentKeyPrefix};
