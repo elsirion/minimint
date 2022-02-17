@@ -24,6 +24,9 @@ pub trait FederationApi: Send + Sync {
     // TODO: more generic module API extensibility
     /// Fetch ln contract state
     async fn fetch_contract(&self, contract: ContractId) -> Result<ContractAccount>;
+
+    /// Fetch the current consensus block height (trailing actual block height)
+    async fn fetch_consensus_block_height(&self) -> Result<u64>;
 }
 
 #[async_trait]
@@ -100,6 +103,10 @@ impl FederationApi for HttpFederationApi {
 
     async fn fetch_contract(&self, contract: ContractId) -> Result<ContractAccount> {
         self.get(&format!("/account/{}", contract)).await
+    }
+
+    async fn fetch_consensus_block_height(&self) -> Result<u64> {
+        self.get("/block_height").await
     }
 }
 
