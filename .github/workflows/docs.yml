@@ -25,7 +25,7 @@ jobs:
 
       - name: Build docs
         env:
-          RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -Z unstable-options --enable-index-page
+          RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -Z unstable-options --index-page README.md
         run: |
           cargo +nightly doc --no-deps --document-private-items
 
@@ -34,4 +34,3 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./target/doc
-          cname: docs.fedimint.org
