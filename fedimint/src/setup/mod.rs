@@ -80,7 +80,12 @@ async fn start_federation(
     if Path::new(&cfg_path).is_file() {
         let cfg: ServerConfig = load_from_file(&cfg_path);
         let db_path = state.out_dir.join(format!("{}.db", server_filename));
-        let handle = tokio::spawn(run_fedimint(cfg.clone(), db_path.clone()));
+
+        let clone_cfg = cfg.clone();
+        let clone_db_path = db_path.clone();
+        let handle = std::thread::spawn(move || {
+            tokio::task::spawn_local(run_fedimint(clone_cfg, clone_db_path))
+        });
         // FIXME: remove this parameter. just check if handle is some.
         state.running = true;
         state.handle = Some(handle);
@@ -110,7 +115,7 @@ struct State {
     running: bool, // this should probably be handle or something ...
     out_dir: PathBuf,
     connection_string: String,
-    handle: Option<JoinHandle<()>>,
+    handle: Option<std::thread::JoinHandle<JoinHandle<()>>>,
 }
 type MutableState = Arc<RwLock<State>>;
 
