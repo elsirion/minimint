@@ -1,8 +1,10 @@
 use crate::keys::CompressedPublicKey;
 use crate::{Feerate, PegInDescriptor};
+use async_trait::async_trait;
 use bitcoin::secp256k1::rand::{CryptoRng, RngCore};
 use bitcoin::Network;
 use fedimint_api::config::GenerateConfig;
+use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_api::PeerId;
 use miniscript::descriptor::Wsh;
 use serde::{Deserialize, Serialize};
@@ -50,9 +52,12 @@ impl Default for FeeConsensus {
     }
 }
 
+#[async_trait(?Send)]
 impl GenerateConfig for WalletConfig {
     type Params = ();
     type ClientConfig = WalletClientConfig;
+    type ConfigMessage = ();
+    type ConfigError = ();
 
     fn trusted_dealer_gen(
         peers: &[PeerId],
@@ -128,5 +133,16 @@ impl GenerateConfig for WalletConfig {
             &CompressedPublicKey::new(pubkey),
             "Bitcoin wallet private key doesn't match multisig pubkey"
         );
+    }
+
+    async fn distributed_gen(
+        _connections: &mut AnyPeerConnections<Self::ConfigMessage>,
+        _our_id: &PeerId,
+        _peers: &[PeerId],
+        _max_evil: usize,
+        _params: &mut Self::Params,
+        _rng: impl RngCore + CryptoRng,
+    ) -> Result<(Self, Self::ClientConfig), Self::ConfigError> {
+        todo!()
     }
 }

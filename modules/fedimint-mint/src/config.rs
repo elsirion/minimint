@@ -1,6 +1,8 @@
 use crate::tiered::TieredMultiZip;
 use crate::Tiered;
+use async_trait::async_trait;
 use fedimint_api::config::GenerateConfig;
+use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_api::{Amount, PeerId};
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -22,9 +24,12 @@ pub struct MintClientConfig {
     pub fee_consensus: FeeConsensus,
 }
 
+#[async_trait(?Send)]
 impl GenerateConfig for MintConfig {
     type Params = [Amount];
     type ClientConfig = MintClientConfig;
+    type ConfigMessage = ();
+    type ConfigError = ();
 
     fn trusted_dealer_gen(
         peers: &[PeerId],
@@ -106,6 +111,17 @@ impl GenerateConfig for MintConfig {
         let pks: BTreeMap<Amount, PublicKeyShare> =
             self.peer_tbs_pks.get(identity).unwrap().as_map().clone();
         assert_eq!(sks, pks, "Mint private key doesn't match pubkey share");
+    }
+
+    async fn distributed_gen(
+        _connections: &mut AnyPeerConnections<Self::ConfigMessage>,
+        _our_id: &PeerId,
+        _peers: &[PeerId],
+        _max_evil: usize,
+        _params: &mut Self::Params,
+        _rng: impl RngCore + CryptoRng,
+    ) -> Result<(Self, Self::ClientConfig), Self::ConfigError> {
+        todo!()
     }
 }
 

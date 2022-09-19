@@ -1,4 +1,6 @@
+use async_trait::async_trait;
 use fedimint_api::config::GenerateConfig;
+use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_api::rand::Rand07Compat;
 use fedimint_api::PeerId;
 use secp256k1::rand::{CryptoRng, RngCore};
@@ -21,9 +23,12 @@ pub struct LightningModuleClientConfig {
     pub fee_consensus: FeeConsensus,
 }
 
+#[async_trait(?Send)]
 impl GenerateConfig for LightningModuleConfig {
     type Params = ();
     type ClientConfig = LightningModuleClientConfig;
+    type ConfigMessage = ();
+    type ConfigError = ();
 
     fn trusted_dealer_gen(
         peers: &[PeerId],
@@ -74,6 +79,17 @@ impl GenerateConfig for LightningModuleConfig {
                 .public_key_share(identity.to_usize()),
             "Lightning private key doesn't match pubkey share"
         )
+    }
+
+    async fn distributed_gen(
+        _connections: &mut AnyPeerConnections<Self::ConfigMessage>,
+        _our_id: &PeerId,
+        _peers: &[PeerId],
+        _max_evil: usize,
+        _params: &mut Self::Params,
+        _rng: impl RngCore + CryptoRng,
+    ) -> Result<(Self, Self::ClientConfig), Self::ConfigError> {
+        todo!()
     }
 }
 

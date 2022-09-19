@@ -23,7 +23,10 @@ use fedimint_core::modules::ln::LightningModule;
 use fedimint_core::modules::wallet::bitcoind::BitcoindRpc;
 use fedimint_core::modules::wallet::{bitcoincore_rpc, Wallet};
 
+use crate::fedimint_api::net::peers::PeerConnections;
+use crate::net::peers::PeerSlice;
 use fedimint_api::config::GenerateConfig;
+use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_core::epoch::{ConsensusItem, EpochHistory, EpochVerifyError};
 pub use fedimint_core::*;
 use mint_client::api::{FederationApi, WsFederationApi};
@@ -34,9 +37,7 @@ use crate::consensus::{
 };
 use crate::db::{EpochHistoryKey, LastEpochKey};
 use crate::net::connect::{Connector, TlsTcpConnector};
-use crate::net::peers::{
-    AnyPeerConnections, PeerConnections, PeerConnector, ReconnectPeerConnections,
-};
+use crate::net::peers::{PeerConnector, ReconnectPeerConnections};
 use crate::rng::RngGenerator;
 
 /// The actual implementation of the federated mint
@@ -70,6 +71,7 @@ pub struct FedimintServer {
     pub cfg: ServerConfig,
     pub hbbft: HoneyBadger<Vec<ConsensusItem>, PeerId>,
     pub api: Arc<dyn FederationApi>,
+    pub peers: BTreeSet<PeerId>,
 }
 
 /// Start all the components of the mint and plug them together
@@ -149,6 +151,7 @@ impl FedimintServer {
             consensus,
             cfg: cfg.clone(),
             api,
+            peers: cfg.peers.keys().cloned().collect(),
         }
     }
 
@@ -263,7 +266,7 @@ impl FedimintServer {
 
         self.connections
             .send(
-                Target::AllExcept(BTreeSet::new()),
+                &Target::AllExcept(BTreeSet::new()).peers(&self.peers),
                 EpochMessage::RejoinRequest,
             )
             .await;
@@ -308,9 +311,8 @@ impl FedimintServer {
                     }
                 }
                 Ok((peer, EpochMessage::RejoinRequest)) => {
-                    let target = Target::Nodes(BTreeSet::from([peer]));
                     let msg = EpochMessage::Rejoin(self.last_signed_epoch(next_epoch), next_epoch);
-                    self.connections.send(target, msg).await;
+                    self.connections.send(&[peer], msg).await;
                 }
                 Ok(msg) => msg_buffer.push(msg),
                 // if peers had an opportunity to reply take max(next_epoch) from a peer threshold
@@ -383,7 +385,10 @@ impl FedimintServer {
 
         for msg in step.messages {
             self.connections
-                .send(msg.target, EpochMessage::Continue(msg.message))
+                .send(
+                    &msg.target.peers(&self.peers),
+                    EpochMessage::Continue(msg.message),
+                )
                 .await;
         }
 
@@ -411,11 +416,10 @@ impl FedimintServer {
         match msg {
             (_, EpochMessage::Rejoin(_, _)) => vec![],
             (peer, EpochMessage::RejoinRequest) => {
-                let target = Target::Nodes(BTreeSet::from([peer]));
                 let last_signed = self.last_signed_epoch(self.hbbft.epoch());
 
                 let msg = EpochMessage::Rejoin(last_signed, self.hbbft.next_epoch());
-                self.connections.send(target, msg).await;
+                self.connections.send(&[peer], msg).await;
                 vec![]
             }
             (peer, EpochMessage::Continue(peer_msg)) => {
@@ -430,7 +434,10 @@ impl FedimintServer {
 
                 for msg in step.messages {
                     self.connections
-                        .send(msg.target, EpochMessage::Continue(msg.message))
+                        .send(
+                            &msg.target.peers(&self.peers),
+                            EpochMessage::Continue(msg.message),
+                        )
                         .await;
                 }
 
