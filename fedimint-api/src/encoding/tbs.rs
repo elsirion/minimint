@@ -26,10 +26,10 @@ macro_rules! impl_external_encode_bls {
     };
 }
 
-impl_external_encode_bls!(tbs::BlindedMessage, tbs::MessagePoint, 48);
-impl_external_encode_bls!(tbs::BlindedSignatureShare, tbs::MessagePoint, 48);
-impl_external_encode_bls!(tbs::BlindedSignature, tbs::MessagePoint, 48);
-impl_external_encode_bls!(tbs::Signature, tbs::MessagePoint, 48);
+impl_external_encode_bls!(tbs::BlindedMessage, tbs::MessagePoint, 96);
+impl_external_encode_bls!(tbs::BlindedSignatureShare, tbs::MessagePoint, 96);
+impl_external_encode_bls!(tbs::BlindedSignature, tbs::MessagePoint, 96);
+impl_external_encode_bls!(tbs::Signature, tbs::MessagePoint, 96);
 
 impl Encodable for tbs::BlindingKey {
     fn consensus_encode<W: std::io::Write>(&self, mut writer: W) -> Result<usize, std::io::Error> {

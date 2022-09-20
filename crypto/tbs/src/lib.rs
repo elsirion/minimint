@@ -15,8 +15,8 @@ use sha3::digest::generic_array::typenum::U32;
 use sha3::Digest;
 use std::hash::Hasher;
 
-pub use bls12_381::G1Affine as MessagePoint;
-pub use bls12_381::G2Affine as PubKeyPoint;
+pub use bls12_381::G1Affine as PubKeyPoint;
+pub use bls12_381::G2Affine as MessagePoint;
 pub use bls12_381::Scalar;
 
 pub mod hash;
@@ -24,31 +24,31 @@ pub mod poly;
 mod serde_impl;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PublicKeyShare(#[serde(with = "serde_impl::g2")] pub G2Affine);
+pub struct PublicKeyShare(#[serde(with = "serde_impl::g1")] pub G1Affine);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SecretKeyShare(#[serde(with = "serde_impl::scalar")] pub Scalar);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AggregatePublicKey(#[serde(with = "serde_impl::g2")] pub G2Affine);
+pub struct AggregatePublicKey(#[serde(with = "serde_impl::g1")] pub G1Affine);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BlindingKey(#[serde(with = "serde_impl::scalar")] pub Scalar);
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct BlindedMessage(#[serde(with = "serde_impl::g1")] pub G1Affine);
+pub struct BlindedMessage(#[serde(with = "serde_impl::g2")] pub G2Affine);
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct BlindedSignatureShare(#[serde(with = "serde_impl::g1")] pub G1Affine);
+pub struct BlindedSignatureShare(#[serde(with = "serde_impl::g2")] pub G2Affine);
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct BlindedSignature(#[serde(with = "serde_impl::g1")] pub G1Affine);
+pub struct BlindedSignature(#[serde(with = "serde_impl::g2")] pub G2Affine);
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct Signature(#[serde(with = "serde_impl::g1")] pub G1Affine);
+pub struct Signature(#[serde(with = "serde_impl::g2")] pub G2Affine);
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct Message(#[serde(with = "serde_impl::g1")] pub G1Affine);
+pub struct Message(#[serde(with = "serde_impl::g2")] pub G2Affine);
 
 pub trait FromRandom {
     fn from_random(rng: &mut impl RngCore) -> Self;
@@ -62,12 +62,12 @@ impl FromRandom for Scalar {
 
 impl Message {
     pub fn from_bytes(msg: &[u8]) -> Message {
-        Message(hash_bytes_to_curve::<G1Projective>(msg).to_affine())
+        Message(hash_bytes_to_curve::<G2Projective>(msg).to_affine())
     }
 
     /// **IMPORTANT**: `from_bytes` includes a tag in the hash, this doesn't
     pub fn from_hash(hash: impl Digest<OutputSize = U32>) -> Message {
-        Message(hash_to_curve::<G1Projective, _>(hash).to_affine())
+        Message(hash_to_curve::<G2Projective, _>(hash).to_affine())
     }
 }
 
@@ -89,7 +89,7 @@ macro_rules! point_impl {
         }
 
         impl $type {
-            pub fn encode_compressed(&self) -> [u8; 48] {
+            pub fn encode_compressed(&self) -> [u8; 96] {
                 self.0.to_compressed()
             }
         }
@@ -112,7 +112,7 @@ point_impl!(BlindedSignatureShare);
 
 impl SecretKeyShare {
     pub fn to_pub_key_share(self) -> PublicKeyShare {
-        PublicKeyShare((G2Projective::generator() * self.0).to_affine())
+        PublicKeyShare((G1Projective::generator() * self.0).to_affine())
     }
 }
 
@@ -134,12 +134,12 @@ pub fn dealer_keygen(
     let (pub_shares, sec_shares) = (1..=keys)
         .map(|idx| {
             let sk = poly.evaluate(idx as u64);
-            let pk = G2Projective::generator() * sk;
+            let pk = G1Projective::generator() * sk;
 
             (PublicKeyShare(pk.to_affine()), SecretKeyShare(sk))
         })
         .unzip();
-    let pub_key = G2Projective::generator() * poly.evaluate(0);
+    let pub_key = G1Projective::generator() * poly.evaluate(0);
 
     (
         AggregatePublicKey(pub_key.to_affine()),
@@ -185,7 +185,7 @@ where
             let y = share.0.into();
             (x, y)
         })
-        .collect::<Vec<(Scalar, G1Projective)>>();
+        .collect::<Vec<(Scalar, G2Projective)>>();
     if points.len() < threshold {
         panic!("Not enough signature shares");
     }
@@ -194,7 +194,7 @@ where
         return BlindedSignature(points.first().unwrap().1.to_affine());
     }
 
-    let bsig: G1Projective = poly::interpolate_zero(points.into_iter());
+    let bsig: G2Projective = poly::interpolate_zero(points.into_iter());
     BlindedSignature(bsig.to_affine())
 }
 
@@ -204,7 +204,7 @@ pub fn unblind_signature(blinding_key: BlindingKey, blinded_sig: BlindedSignatur
 }
 
 pub fn verify(msg: Message, sig: Signature, pk: AggregatePublicKey) -> bool {
-    pairing(&msg.0, &pk.0) == pairing(&sig.0, &G2Affine::generator())
+    pairing(&pk.0, &msg.0) == pairing(&G1Affine::generator(), &sig.0)
 }
 
 pub fn verify_blind_share(
@@ -212,7 +212,7 @@ pub fn verify_blind_share(
     sig: BlindedSignatureShare,
     pk: PublicKeyShare,
 ) -> bool {
-    pairing(&msg.0, &pk.0) == pairing(&sig.0, &G2Affine::generator())
+    pairing(&pk.0, &msg.0) == pairing(&G1Affine::generator(), &sig.0)
 }
 
 pub trait Aggregatable {
@@ -234,7 +234,7 @@ impl Aggregatable for Vec<PublicKeyShare> {
             .enumerate()
             .map(|(idx, PublicKeyShare(pk))| (Scalar::from((idx + 1) as u64), pk.into()))
             .take(threshold);
-        let pk: G2Projective = poly::interpolate_zero(elements);
+        let pk: G1Projective = poly::interpolate_zero(elements);
         AggregatePublicKey(pk.to_affine())
     }
 }
