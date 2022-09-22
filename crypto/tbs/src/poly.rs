@@ -17,12 +17,10 @@ where
 
 impl<G, S> Poly<G, S>
 where
-    G: Debug + MulAssign<S> + AddAssign<G> + FromRandom + Copy,
+    G: Debug + MulAssign<S> + AddAssign<G> + Copy,
     S: Copy,
 {
-    pub fn random(degree: usize, rng: &mut impl RngCore) -> Self {
-        assert_ne!(degree, usize::max_value());
-        let coefficients = (0..=degree).map(|_| G::from_random(rng)).collect();
+    pub fn from(coefficients: Vec<G>) -> Self {
         Poly {
             coefficients,
             _pd: PhantomData,
@@ -44,6 +42,21 @@ where
 
     pub fn coefficients(&self) -> Iter<G> {
         self.coefficients.iter()
+    }
+}
+
+impl<G, S> Poly<G, S>
+    where
+    G: Debug + MulAssign<S> + AddAssign<G> + FromRandom + Copy,
+    S: Copy,
+    {
+    pub fn random(degree: usize, rng: &mut impl RngCore) -> Self {
+        assert_ne!(degree, usize::max_value());
+        let coefficients = (0..=degree).map(|_| G::from_random(rng)).collect();
+        Poly {
+            coefficients,
+            _pd: PhantomData,
+        }
     }
 }
 

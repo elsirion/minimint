@@ -2,6 +2,7 @@ use crate::net::peers::AnyPeerConnections;
 use crate::rand::Rand07Compat;
 use crate::PeerId;
 use async_trait::async_trait;
+use hbbft::crypto::group::Curve;
 use hbbft::crypto::group::GroupEncoding;
 use hbbft::crypto::poly::Commitment;
 use hbbft::crypto::{G1Affine, IntoScalar};
@@ -15,14 +16,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::BorrowMut;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::ops::{Add, AddAssign};
 use std::ops::Mul;
+use std::ops::{Add, AddAssign};
 use std::sync::Arc;
 use tbs::hash::hash_bytes_to_curve;
 use tbs::poly::Poly;
 use tbs::Scalar;
 use tracing::warn;
-use hbbft::crypto::group::Curve;
 
 /// Part of a config that needs to be generated to bootstrap a new federation.
 #[async_trait(?Send)]
@@ -57,13 +57,14 @@ pub trait GenerateConfig: Sized {
 }
 
 struct DkgRunner {
+    peers: Vec<PeerId>,
+    our_id: PeerId,
+    coefficients: usize,
     f1_poly: Poly<Scalar, Scalar>,
     f2_poly: Poly<Scalar, Scalar>,
-    peers: Vec<PeerId>,
     commitments: BTreeMap<PeerId, Vec<G1Projective>>,
     sk_shares: BTreeMap<PeerId, Scalar>,
-    pk_shares: BTreeMap<PeerId, G1Projective>,
-    our_id: PeerId,
+    pk_shares: BTreeMap<PeerId, Vec<G1Projective>>,
 }
 
 impl DkgRunner {
@@ -86,15 +87,15 @@ impl DkgRunner {
             .collect();
 
         let mut dkg = DkgRunner {
+            peers: peers.clone().to_vec(),
+            our_id: our_id.clone(),
+            coefficients: degree + 1,
             f1_poly,
             f2_poly,
-            peers: peers.clone().to_vec(),
             commitments: Default::default(),
             sk_shares: Default::default(),
             pk_shares: Default::default(),
-            our_id: our_id.clone(),
         };
-        dkg.commitments.insert(our_id.clone(), commit.clone());
 
         let step = DkgStep {
             messages: dkg.broadcast(DkgMessage::Commit(commit)),
@@ -109,7 +110,10 @@ impl DkgRunner {
 
         match msg {
             DkgMessage::Commit(commit) => {
-                self.commitments.insert(peer, commit);
+                assert_eq!(self.coefficients, commit.len(), "wrong degree from {}", peer);
+                if self.commitments.insert(peer, commit).is_some() {
+                    panic!("{} sent us two commitments!", peer);
+                }
 
                 // once everyone has made commitments, send out shares
                 if self.commitments.len() == self.peers.len() {
@@ -127,12 +131,13 @@ impl DkgRunner {
                 let commitment = self
                     .commitments
                     .get(&peer)
-                    .expect("sent share before commit");
+                    .expect(&format!("{} sent share before commit", peer));
                 let commit_product: G1Projective = commitment
                     .iter()
                     .enumerate()
                     .map(|(idx, commit)| *commit * scalar(&self.our_id).pow(&[idx as u64, 0, 0, 0]))
                     .sum();
+
                 assert_eq!(share_product, commit_product, "bad commit from {}", peer);
                 self.sk_shares.insert(peer, s1);
 
@@ -151,29 +156,37 @@ impl DkgRunner {
                 let share = self
                     .sk_shares
                     .get(&peer)
-                    .expect("send extract before share");
+                    .expect(&format!("{} sent extract before share", peer));
                 let share_product = Self::gen_g() * share;
-                self.pk_shares.insert(peer, extract[0]);
-
                 let extract_product: G1Projective = extract
                     .iter()
                     .enumerate()
                     .map(|(idx, commit)| *commit * scalar(&self.our_id).pow(&[idx as u64, 0, 0, 0]))
                     .sum();
+
                 assert_eq!(share_product, extract_product, "bad extract from {}", peer);
+                assert_eq!(self.coefficients, extract.len(), "wrong degree from {}", peer);
+                self.pk_shares.insert(peer, extract);
 
                 if self.pk_shares.len() == self.peers.len() {
-                    let sks = self.sk_shares.values().clone().sum();
-                    let pks: Vec<G1Projective> = self.pk_shares.values().cloned().collect();
+                    let pks: Vec<G1Projective> = (0..self.coefficients).map(|idx|{
+                        self.pk_shares.values().map(|shares| {
+                            shares.get(idx).unwrap()
+                        }).sum::<G1Projective>()
+                    }).collect();
 
-                    warn!("SK {:?}", Self::gen_g() * sks);
-                    pks.iter().for_each(|pk|
-                        warn!("PK {:?}", (*pk))
-                    );
-                    // warn!("PK {:?}", pks.iter().sum::<G1Projective>());
+                    let mut pks2 = hbbft::crypto::poly::Poly::zero().commitment();
+                    for (_, pk) in &self.pk_shares {
+                        pks2 += Commitment::from(pk.clone());
+                    }
+                    let sks = self.sk_shares.values().cloned().sum();
+
+                    warn!("SK {} {:?}", self.our_id, Self::gen_g() * sks);
+                    warn!("PK1 {:?}", pks);
+                    warn!("PK2 {:?}", pks2);
 
                     step.keys = Some(DkgKeys {
-                        public_key_set: pks,
+                        public_key_set: pks2,
                         secret_key_share: sks,
                     });
                 }
@@ -234,7 +247,7 @@ pub struct DkgStep {
 
 #[derive(Debug, Clone)]
 pub struct DkgKeys {
-    pub public_key_set: Vec<G1Projective>,
+    pub public_key_set: Commitment,
     pub secret_key_share: Scalar,
 }
 
@@ -242,7 +255,7 @@ impl DkgKeys {
     // compatible with threshold_crypto lib
     pub fn threshold_crypto(mut self) -> (PublicKeySet, SecretKeyShare) {
         (
-            PublicKeySet::from(Commitment::from(self.public_key_set)),
+            PublicKeySet::from(self.public_key_set),
             SecretKeyShare::from_mut(&mut self.secret_key_share),
         )
     }
@@ -264,7 +277,7 @@ pub enum DkgError {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{DkgKeys, DkgRunner, scalar};
+    use crate::config::{scalar, DkgKeys, DkgRunner};
     use crate::PeerId;
     use fedimint_api::config::DkgStep;
     use hbbft::crypto::poly::Poly;
@@ -310,8 +323,7 @@ mod tests {
 
         for (peer, keys) in keys {
             let (pk, sk) = keys.threshold_crypto();
-            assert_eq!(pk.threshold(), 3);
-            if pk.public_key_share(peer.to_usize()) == sk.public_key_share() {
+            if pk.public_key_share(scalar(&peer)) == sk.public_key_share() {
                 warn!("OK");
             } else {
                 warn!("BAD");
