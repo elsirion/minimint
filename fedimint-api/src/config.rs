@@ -171,7 +171,7 @@ impl DkgRunner {
                 if self.pk_shares.len() == self.peers.len() {
                     let pks: Vec<G1Projective> = (0..self.coefficients).map(|idx|{
                         self.pk_shares.values().map(|shares| {
-                            shares.get(idx).unwrap()
+                            Commitment::from(shares.clone()).evaluate(idx)
                         }).sum::<G1Projective>()
                     }).collect();
 
@@ -182,8 +182,8 @@ impl DkgRunner {
                     let sks = self.sk_shares.values().cloned().sum();
 
                     warn!("SK {} {:?}", self.our_id, Self::gen_g() * sks);
+                    warn!("PK2 {:?}", self.peers.iter().map(|p| pks2.evaluate(scalar(p))).collect::<Vec<_>>());
                     warn!("PK1 {:?}", pks);
-                    warn!("PK2 {:?}", pks2);
 
                     step.keys = Some(DkgKeys {
                         public_key_set: pks2,
