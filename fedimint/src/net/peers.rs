@@ -64,10 +64,8 @@ pub struct NetworkConfig {
 /// Information needed to connect to one other federation member
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
-    /// The peer's hbbft network address and port (e.g. `10.42.0.10:4000`)
-    pub hbbft_addr: String,
-    /// The peer's websocket network address and port (e.g. `ws://10.42.0.10:5000`)
-    pub api_addr: Url,
+    /// The peer's network address and port (e.g. `10.42.0.10:4000`)
+    pub address: String,
 }
 
 /// Internal message type for [`ReconnectPeerConnections`], just public because it appears in the
@@ -108,6 +106,18 @@ enum PeerConnectionState<M> {
     Connected(ConnectedPeerConnectionState<M>),
 }
 
+impl NetworkConfig {
+    pub fn urls(&self, prefix: &str) -> Vec<Url> {
+        self.peers
+            .iter()
+            .map(|(_, connection)| {
+                Url::parse(&format!("{}{}", prefix, connection.address))
+                    .expect("Could not parse Url")
+            })
+            .collect()
+    }
+}
+
 impl<T: 'static> ReconnectPeerConnections<T>
 where
     T: std::fmt::Debug + Clone + Serialize + DeserializeOwned + Unpin + Send + Sync,
@@ -117,8 +127,6 @@ where
     /// requirements on the `Connector`.
     #[instrument(skip_all)]
     pub async fn new(cfg: NetworkConfig, connect: PeerConnector<T>) -> Self {
-        info!("Starting mint {}", cfg.identity);
-
         let shared_connector: SharedAnyConnector<PeerMessage<T>> = connect.into();
 
         let (connection_senders, connections) = cfg
@@ -470,7 +478,7 @@ where
 
     async fn try_reconnect(&self) -> Result<AnyFramedTransport<PeerMessage<M>>, anyhow::Error> {
         debug!("Trying to reconnect");
-        let addr = &self.cfg.hbbft_addr;
+        let addr = &self.cfg.address;
         let (connected_peer, conn) = self.connect.connect_framed(addr.clone(), self.peer).await?;
 
         if connected_peer == self.peer {
@@ -590,7 +598,7 @@ mod tests {
             .enumerate()
             .map(|(idx, &peer)| {
                 let cfg = ConnectionConfig {
-                    hbbft_addr: peer.to_string(),
+                    address: peer.to_string(),
                     api_addr: Url::parse(format!("http://{}", peer).as_str())
                         .expect("Could not parse Url"),
                 };

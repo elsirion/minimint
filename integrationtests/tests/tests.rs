@@ -160,7 +160,7 @@ async fn ecash_can_be_exchanged_directly_between_users() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ecash_cannot_double_spent_with_different_nodes() {
-    let (fed, user1, bitcoin, _, _) = fixtures(2, &[sats(100), sats(1000)]).await;
+    let (fed, user1, bitcoin, _, _) = fixtures(2, &[sats(100)]).await;
     fed.mine_and_mint(&user1, &*bitcoin, sats(5000)).await;
     let ecash = fed.spend_ecash(&user1, sats(2000)).await;
 

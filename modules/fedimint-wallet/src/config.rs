@@ -7,6 +7,7 @@ use fedimint_api::config::GenerateConfig;
 use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_api::PeerId;
 use miniscript::descriptor::Wsh;
+use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -56,7 +57,7 @@ impl Default for FeeConsensus {
 impl GenerateConfig for WalletConfig {
     type Params = ();
     type ClientConfig = WalletClientConfig;
-    type ConfigMessage = ();
+    type ConfigMessage = CompressedPublicKey;
     type ConfigError = ();
 
     fn trusted_dealer_gen(
@@ -72,46 +73,24 @@ impl GenerateConfig for WalletConfig {
             .map(|&id| (id, secp.generate_keypair(&mut rng)))
             .collect::<Vec<_>>();
 
-        let peg_in_descriptor = PegInDescriptor::Wsh(
-            Wsh::new_sortedmulti(
-                peers.len() - max_evil,
-                btc_pegin_keys
-                    .iter()
-                    .map(|(_, (_, pk))| CompressedPublicKey { key: *pk })
-                    .collect(),
-            )
-            .unwrap(),
-        );
-
-        let wallet_cfg = btc_pegin_keys
+        let wallet_cfg: BTreeMap<PeerId, WalletConfig> = btc_pegin_keys
             .iter()
             .map(|(id, (sk, _))| {
-                let cfg = WalletConfig {
-                    network: Network::Regtest,
-                    peg_in_descriptor: peg_in_descriptor.clone(), // TODO: remove redundancy?
-                    peer_peg_in_keys: btc_pegin_keys
+                let cfg = WalletConfig::new(
+                    btc_pegin_keys
                         .iter()
                         .map(|(peer_id, (_, pk))| (*peer_id, CompressedPublicKey { key: *pk }))
                         .collect(),
-                    peg_in_key: *sk,
-                    finality_delay: FINALITY_DELAY,
-                    default_fee: Feerate { sats_per_kvb: 1000 },
-                    btc_rpc_address: "127.0.0.1:18443".to_string(),
-                    btc_rpc_user: "bitcoin".to_string(),
-                    btc_rpc_pass: "bitcoin".to_string(),
-                    fee_consensus: FeeConsensus::default(),
-                };
+                    *sk,
+                    peers.len() - max_evil,
+                );
 
                 (*id, cfg)
             })
             .collect();
 
-        let client_cfg = WalletClientConfig {
-            peg_in_descriptor,
-            network: Network::Regtest,
-            finality_delay: FINALITY_DELAY,
-            fee_consensus: FeeConsensus::default(),
-        };
+        let descriptor = wallet_cfg[&PeerId::from(0)].peg_in_descriptor.clone();
+        let client_cfg = WalletClientConfig::new(descriptor);
 
         (wallet_cfg, client_cfg)
     }
@@ -136,13 +115,70 @@ impl GenerateConfig for WalletConfig {
     }
 
     async fn distributed_gen(
-        _connections: &mut AnyPeerConnections<Self::ConfigMessage>,
-        _our_id: &PeerId,
-        _peers: &[PeerId],
-        _max_evil: usize,
-        _params: &mut Self::Params,
-        _rng: impl RngCore + CryptoRng,
+        connections: &mut AnyPeerConnections<Self::ConfigMessage>,
+        our_id: &PeerId,
+        peers: &[PeerId],
+        max_evil: usize,
+        _params: &Self::Params,
+        mut rng: impl RngCore + CryptoRng,
     ) -> Result<(Self, Self::ClientConfig), Self::ConfigError> {
-        todo!()
+        let secp = secp256k1::Secp256k1::new();
+        let (sk, pk) = secp.generate_keypair(&mut rng);
+        let our_key = CompressedPublicKey { key: pk };
+        let mut peer_peg_in_keys: BTreeMap<PeerId, CompressedPublicKey> = BTreeMap::new();
+
+        connections.send(peers, our_key.clone()).await;
+
+        for _ in 1..peers.len() {
+            let (peer, msg) = connections.receive().await;
+            peer_peg_in_keys.insert(peer, msg);
+        }
+        peer_peg_in_keys.insert(*our_id, our_key);
+        assert_eq!(peer_peg_in_keys.len(), peers.len());
+
+        let wallet_cfg = WalletConfig::new(peer_peg_in_keys, sk, peers.len() - max_evil);
+        let client_cfg = WalletClientConfig::new(wallet_cfg.peg_in_descriptor.clone());
+
+        Ok((wallet_cfg, client_cfg))
+    }
+}
+
+impl WalletConfig {
+    pub fn new(
+        pubkeys: BTreeMap<PeerId, CompressedPublicKey>,
+        sk: SecretKey,
+        threshold: usize,
+    ) -> Self {
+        let peg_in_descriptor = PegInDescriptor::Wsh(
+            Wsh::new_sortedmulti(
+                threshold,
+                pubkeys.iter().map(|(_, pk)| pk.clone()).collect(),
+            )
+            .unwrap(),
+        );
+
+        Self {
+            network: Network::Regtest,
+            peg_in_descriptor,
+            peer_peg_in_keys: pubkeys,
+            peg_in_key: sk,
+            default_fee: Feerate { sats_per_kvb: 1000 },
+            btc_rpc_address: "127.0.0.1:18443".to_string(),
+            btc_rpc_user: "bitcoin".to_string(),
+            btc_rpc_pass: "bitcoin".to_string(),
+            finality_delay: FINALITY_DELAY,
+            fee_consensus: FeeConsensus::default(),
+        }
+    }
+}
+
+impl WalletClientConfig {
+    pub fn new(peg_in_descriptor: PegInDescriptor) -> Self {
+        Self {
+            peg_in_descriptor,
+            network: Network::Regtest,
+            finality_delay: 0,
+            fee_consensus: Default::default(),
+        }
     }
 }

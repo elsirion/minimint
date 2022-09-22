@@ -1,14 +1,21 @@
 use crate::tiered::TieredMultiZip;
 use crate::Tiered;
 use async_trait::async_trait;
-use fedimint_api::config::GenerateConfig;
+use bincode::serialize;
+use fedimint_api::config::{dkg, DkgError, DkgMessage, GenerateConfig};
 use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_api::{Amount, PeerId};
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::iter::FromIterator;
-use tbs::{dealer_keygen, Aggregatable, AggregatePublicKey, PublicKeyShare};
+use tbs::{
+    dealer_keygen, Aggregatable, AggregatePublicKey, PublicKeyShare, Scalar, SecretKeyShare,
+};
+use threshold_crypto::group::Curve;
+use threshold_crypto::group::GroupEncoding;
+use threshold_crypto::serde_impl::SerdeSecret;
+use threshold_crypto::{G1Affine, G1Projective};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MintConfig {
@@ -28,8 +35,8 @@ pub struct MintClientConfig {
 impl GenerateConfig for MintConfig {
     type Params = [Amount];
     type ClientConfig = MintClientConfig;
-    type ConfigMessage = ();
-    type ConfigError = ();
+    type ConfigMessage = DkgMessage;
+    type ConfigError = DkgError;
 
     fn trusted_dealer_gen(
         peers: &[PeerId],
@@ -114,14 +121,75 @@ impl GenerateConfig for MintConfig {
     }
 
     async fn distributed_gen(
-        _connections: &mut AnyPeerConnections<Self::ConfigMessage>,
-        _our_id: &PeerId,
-        _peers: &[PeerId],
-        _max_evil: usize,
-        _params: &mut Self::Params,
-        _rng: impl RngCore + CryptoRng,
+        connections: &mut AnyPeerConnections<Self::ConfigMessage>,
+        our_id: &PeerId,
+        peers: &[PeerId],
+        max_evil: usize,
+        params: &Self::Params,
+        mut rng: impl RngCore + CryptoRng,
     ) -> Result<(Self, Self::ClientConfig), Self::ConfigError> {
-        todo!()
+        let mut amounts_keys = HashMap::new();
+        for amount in params {
+            let keys = dkg(connections, our_id, peers, max_evil, &mut rng).await?;
+            amounts_keys.insert(*amount, keys);
+        }
+
+        let server = MintConfig {
+            tbs_sks: amounts_keys
+                .iter()
+                .map(|(amount, keys)| {
+                    let mut bytes: [u8; 32] = [0; 32];
+                    let vec = serialize(&SerdeSecret(&keys.secret_key_share)).unwrap();
+                    bytes.copy_from_slice(&vec);
+                    let sks = SecretKeyShare(Scalar::from_bytes(&bytes).unwrap());
+                    tracing::warn!(
+                        "A {:?}",
+                        keys.secret_key_share.public_key_share().to_bytes()
+                    );
+
+                    (*amount, sks)
+                })
+                .collect(),
+            peer_tbs_pks: peers
+                .iter()
+                .map(|peer| {
+                    (
+                        *peer,
+                        amounts_keys
+                            .iter()
+                            .map(|(amount, keys)| {
+                                let idx = peer.to_usize();
+                                tracing::warn!("B idx {:?}", idx);
+                                tracing::warn!("B thres {:?}", keys.public_key_set.threshold());
+                                let bytes = keys.public_key_set.public_key_share(idx).to_bytes();
+                                tracing::warn!("B bytes {:?}", bytes);
+                                let pks =
+                                    PublicKeyShare(G1Affine::from_compressed(&bytes).unwrap());
+
+                                (*amount, pks)
+                            })
+                            .collect::<Tiered<PublicKeyShare>>(),
+                    )
+                })
+                .collect(),
+            fee_consensus: Default::default(),
+            threshold: 0,
+        };
+
+        let client = MintClientConfig {
+            tbs_pks: amounts_keys
+                .iter()
+                .map(|(amount, keys)| {
+                    let bytes = keys.public_key_set.public_key().to_bytes();
+                    let pk = AggregatePublicKey(G1Affine::from_compressed(&bytes).unwrap());
+
+                    (*amount, pk)
+                })
+                .collect(),
+            fee_consensus: Default::default(),
+        };
+
+        Ok((server, client))
     }
 }
 

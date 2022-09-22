@@ -31,13 +31,12 @@ use rand::rngs::OsRng;
 use rocksdb::OptimisticTransactionDB;
 use tokio::sync::Mutex;
 
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
 use fake::{FakeBitcoinTest, FakeLightningTest};
-use fedimint::config::ServerConfigParams;
-use fedimint::config::{ClientConfig, ServerConfig};
+use fedimint::config::{connect, ClientConfig, ServerConfig, ServerConfigParams};
 use fedimint::consensus::{ConsensusOutcome, ConsensusProposal};
 use fedimint::epoch::ConsensusItem;
 use fedimint::net::connect::mock::MockNetwork;
@@ -50,6 +49,7 @@ use fedimint_api::db::batch::DbBatch;
 use fedimint_api::db::mem_impl::MemDatabase;
 use fedimint_api::db::Database;
 use fedimint_api::{Amount, FederationModule, OutPoint, PeerId};
+use fedimint_mint::config::MintConfig;
 use fedimint_mint::tiered::TieredMulti;
 use fedimint_wallet::bitcoind::BitcoindRpc;
 use fedimint_wallet::config::WalletConfig;
@@ -97,7 +97,7 @@ pub async fn fixtures(
     GatewayTest,
     Box<dyn LightningTest>,
 ) {
-    let base_port = BASE_PORT.fetch_add(num_peers * 2 + 1, Ordering::Relaxed);
+    let base_port = BASE_PORT.fetch_add(num_peers * 7 + 1, Ordering::Relaxed);
 
     // in case we need to output logs using 'cargo test -- --nocapture'
     if base_port == 4000 {
@@ -109,16 +109,8 @@ pub async fn fixtures(
             .init();
     }
 
-    let params = ServerConfigParams {
-        hbbft_base_port: base_port,
-        api_base_port: base_port + num_peers,
-        amount_tiers: amount_tiers.to_vec(),
-    };
-    let peers = (0..num_peers as u16).map(PeerId::from).collect::<Vec<_>>();
-
-    let max_evil = hbbft::util::max_faulty(peers.len());
-    let (server_config, client_config) =
-        ServerConfig::trusted_dealer_gen(&peers, max_evil, &params, OsRng::new().unwrap());
+    let (server_config, client_config) = gen_config(num_peers, amount_tiers, base_port).await;
+    let peers = server_config.keys().cloned().collect();
 
     match env::var("FM_TEST_DISABLE_MOCKS") {
         Ok(s) if s == "1" => {
@@ -184,6 +176,41 @@ pub async fn fixtures(
             (fed, user, Box::new(bitcoin), gateway, Box::new(lightning))
         }
     }
+}
+
+async fn gen_config(
+    num_peers: u16,
+    amount_tiers: &[Amount],
+    base_port: u16,
+) -> (BTreeMap<PeerId, ServerConfig>, ClientConfig) {
+    let peers = (0..num_peers as u16).map(PeerId::from).collect::<Vec<_>>();
+    let params = ServerConfigParams::gen_local(&peers, amount_tiers.to_vec(), base_port);
+    let max_evil = hbbft::util::max_faulty(peers.len());
+    ServerConfig::trusted_dealer_gen(&peers, max_evil, &params, OsRng::new().unwrap());
+
+    let configs: Vec<(PeerId, (ServerConfig, ClientConfig))> = join_all(peers.iter().map(|peer| {
+        let params = params.clone();
+        let peers = peers.clone();
+
+        async move {
+            let our_params = params[&peer].clone();
+            let mut hbbft = connect(our_params.hbbft_dkg, our_params.tls).await;
+
+            let rng = OsRng::new().unwrap();
+            let cfg =
+                ServerConfig::distributed_gen(&mut hbbft, &peer, &peers, max_evil, &params, rng);
+            (*peer, cfg.await.expect("generation failed"))
+        }
+    }))
+    .await;
+
+    let (_, (_, client_config)) = configs.first().unwrap().clone();
+    let server_configs = configs
+        .into_iter()
+        .map(|(peer, (server, _))| (peer, server))
+        .collect();
+
+    (server_configs, client_config)
 }
 
 fn rocks(dir: String) -> OptimisticTransactionDB<rocksdb::SingleThreaded> {

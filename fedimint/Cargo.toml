@@ -31,7 +31,7 @@ bitcoin = "0.28.1"
 bytes = "1.1.0"
 clap = { version = "3.2.20", features = ["derive"] }
 futures = "0.3.9"
-hbbft = { git = "https://github.com/fedimint/hbbft" }
+hbbft = { git = "https://github.com/jkitman/hbbft", branch = "upgrade-threshold-crypto-libs" }
 hex = "0.4.2"
 itertools = "0.10.0"
 jsonrpsee = { version = "0.15.1", features = ["ws-server"] }
@@ -59,5 +59,5 @@ tokio-util = { version = "0.7.3", features = [ "codec" ] }
 tracing ="0.1.22"
 tracing-subscriber = { version = "0.3.1", features = [ "env-filter" ] }
 tracing-opentelemetry = { version = "0.17.2", optional = true}
-threshold_crypto = { git = "https://github.com/fedimint/threshold_crypto" }
+threshold_crypto = { git = "https://github.com/jkitman/threshold_crypto", branch = "upgrade-threshold-crypto-libs" }
 url = { version = "2.2.2", features = ["serde"] }

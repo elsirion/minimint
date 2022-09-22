@@ -4,6 +4,7 @@ use rand::RngCore;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Mul, MulAssign};
+use std::slice::Iter;
 
 #[derive(Debug)]
 pub struct Poly<G, S>
@@ -39,6 +40,10 @@ where
             result.add_assign(c);
         }
         result
+    }
+
+    pub fn coefficients(&self) -> Iter<G> {
+        self.coefficients.iter()
     }
 }
 

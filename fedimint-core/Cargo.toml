@@ -32,7 +32,7 @@ sha3 = "0.10.4"
 tbs = { path = "../crypto/tbs" }
 thiserror = "1.0.23"
 tracing ="0.1.22"
-threshold_crypto = { git = "https://github.com/fedimint/threshold_crypto" }
+threshold_crypto = { git = "https://github.com/jkitman/threshold_crypto", branch = "upgrade-threshold-crypto-libs" }
 bitcoin_hashes = "0.10.0"
 url = { version = "2.2.2", features = ["serde"] }
 

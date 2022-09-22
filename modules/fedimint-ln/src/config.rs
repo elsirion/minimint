@@ -1,11 +1,16 @@
 use async_trait::async_trait;
-use fedimint_api::config::GenerateConfig;
+use fedimint_api::config::{dkg, DkgError, DkgMessage, GenerateConfig};
 use fedimint_api::net::peers::AnyPeerConnections;
 use fedimint_api::rand::Rand07Compat;
 use fedimint_api::PeerId;
+use hbbft::sync_key_gen::SyncKeyGen;
+use secp256k1::rand::distributions::Standard;
+use secp256k1::rand::Rng;
 use secp256k1::rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use threshold_crypto::serde_impl::SerdeSecret;
+use threshold_crypto::SecretKey;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightningModuleConfig {
@@ -27,8 +32,8 @@ pub struct LightningModuleClientConfig {
 impl GenerateConfig for LightningModuleConfig {
     type Params = ();
     type ClientConfig = LightningModuleClientConfig;
-    type ConfigMessage = ();
-    type ConfigError = ();
+    type ConfigMessage = DkgMessage;
+    type ConfigError = DkgError;
 
     fn trusted_dealer_gen(
         peers: &[PeerId],
@@ -82,14 +87,28 @@ impl GenerateConfig for LightningModuleConfig {
     }
 
     async fn distributed_gen(
-        _connections: &mut AnyPeerConnections<Self::ConfigMessage>,
-        _our_id: &PeerId,
-        _peers: &[PeerId],
-        _max_evil: usize,
-        _params: &mut Self::Params,
-        _rng: impl RngCore + CryptoRng,
+        connections: &mut AnyPeerConnections<Self::ConfigMessage>,
+        our_id: &PeerId,
+        peers: &[PeerId],
+        max_evil: usize,
+        _params: &Self::Params,
+        mut rng: impl RngCore + CryptoRng,
     ) -> Result<(Self, Self::ClientConfig), Self::ConfigError> {
-        todo!()
+        let keys = dkg(connections, our_id, peers, max_evil, &mut rng).await?;
+
+        let server = LightningModuleConfig {
+            threshold_pub_keys: keys.public_key_set.clone(),
+            threshold_sec_key: SerdeSecret(keys.secret_key_share),
+            threshold: peers.len() - max_evil,
+            fee_consensus: Default::default(),
+        };
+
+        let client = LightningModuleClientConfig {
+            threshold_pub_key: keys.public_key_set.public_key(),
+            fee_consensus: Default::default(),
+        };
+
+        Ok((server, client))
     }
 }
 
