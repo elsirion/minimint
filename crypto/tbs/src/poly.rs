@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Mul, MulAssign};
 use std::slice::Iter;
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Poly<G, S>
 where
     G: Debug,
@@ -46,13 +46,34 @@ where
 }
 
 impl<G, S> Poly<G, S>
-    where
+where
     G: Debug + MulAssign<S> + AddAssign<G> + FromRandom + Copy,
     S: Copy,
-    {
+{
     pub fn random(degree: usize, rng: &mut impl RngCore) -> Self {
         assert_ne!(degree, usize::max_value());
         let coefficients = (0..=degree).map(|_| G::from_random(rng)).collect();
+        Poly {
+            coefficients,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<G, S> Add for Poly<G, S>
+where
+    G: Debug + std::ops::Add<Output = G>,
+{
+    type Output = Poly<G, S>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        assert_eq!(self.coefficients.len(), rhs.coefficients.len());
+        let coefficients = self
+            .coefficients
+            .into_iter()
+            .zip(rhs.coefficients)
+            .map(|(a, b)| a + b)
+            .collect();
         Poly {
             coefficients,
             _pd: PhantomData,
@@ -96,6 +117,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::Poly;
+
     #[test]
     fn test_interpolate_simple() {
         use bls12_381::Scalar;
@@ -110,5 +133,14 @@ mod tests {
             crate::poly::interpolate_zero(vals.into_iter()),
             Scalar::from(6)
         );
+    }
+
+    #[test]
+    fn test_poly_add() {
+        let poly_a = Poly::<u8, u8>::from(vec![1, 2, 3]);
+        let poly_b = Poly::<u8, u8>::from(vec![4, 5, 6]);
+        let poly_res = Poly::<u8, u8>::from(vec![5, 7, 9]);
+
+        assert_eq!(poly_a + poly_b, poly_res);
     }
 }

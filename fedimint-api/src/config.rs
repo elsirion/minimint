@@ -21,7 +21,7 @@ use std::ops::{Add, AddAssign};
 use std::sync::Arc;
 use tbs::hash::hash_bytes_to_curve;
 use tbs::poly::Poly;
-use tbs::Scalar;
+use tbs::{AggregatePublicKey, PublicKeyShare, Scalar};
 use tracing::warn;
 
 /// Part of a config that needs to be generated to bootstrap a new federation.
@@ -110,7 +110,12 @@ impl DkgRunner {
 
         match msg {
             DkgMessage::Commit(commit) => {
-                assert_eq!(self.coefficients, commit.len(), "wrong degree from {}", peer);
+                assert_eq!(
+                    self.coefficients,
+                    commit.len(),
+                    "wrong degree from {}",
+                    peer
+                );
                 if self.commitments.insert(peer, commit).is_some() {
                     panic!("{} sent us two commitments!", peer);
                 }
@@ -165,29 +170,26 @@ impl DkgRunner {
                     .sum();
 
                 assert_eq!(share_product, extract_product, "bad extract from {}", peer);
-                assert_eq!(self.coefficients, extract.len(), "wrong degree from {}", peer);
+                assert_eq!(
+                    self.coefficients,
+                    extract.len(),
+                    "wrong degree from {}",
+                    peer
+                );
                 self.pk_shares.insert(peer, extract);
 
                 if self.pk_shares.len() == self.peers.len() {
-                    let pks: Vec<G1Projective> = (0..self.coefficients).map(|idx|{
-                        self.pk_shares.values().map(|shares| {
-                            Commitment::from(shares.clone()).evaluate(idx)
-                        }).sum::<G1Projective>()
-                    }).collect();
-
-                    let mut pks2 = hbbft::crypto::poly::Poly::zero().commitment();
-                    for (_, pk) in &self.pk_shares {
-                        pks2 += Commitment::from(pk.clone());
-                    }
-                    let sks = self.sk_shares.values().cloned().sum();
-
-                    warn!("SK {} {:?}", self.our_id, Self::gen_g() * sks);
-                    warn!("PK2 {:?}", self.peers.iter().map(|p| pks2.evaluate(scalar(p))).collect::<Vec<_>>());
-                    warn!("PK1 {:?}", pks);
+                    let public_key_set = self
+                        .pk_shares
+                        .iter()
+                        .map(|(_peer, commit)| Poly::<_, Scalar>::from(commit.clone()))
+                        .reduce(|a, b| a + b)
+                        .unwrap();
+                    let secret_key_share = self.sk_shares.values().cloned().sum();
 
                     step.keys = Some(DkgKeys {
-                        public_key_set: pks2,
-                        secret_key_share: sks,
+                        public_key_set,
+                        secret_key_share,
                     });
                 }
             }
@@ -247,7 +249,7 @@ pub struct DkgStep {
 
 #[derive(Debug, Clone)]
 pub struct DkgKeys {
-    pub public_key_set: Commitment,
+    pub public_key_set: Poly<G1Projective, Scalar>,
     pub secret_key_share: Scalar,
 }
 
@@ -255,9 +257,26 @@ impl DkgKeys {
     // compatible with threshold_crypto lib
     pub fn threshold_crypto(mut self) -> (PublicKeySet, SecretKeyShare) {
         (
-            PublicKeySet::from(self.public_key_set),
+            PublicKeySet::from(hbbft::crypto::poly::Commitment::from(
+                self.public_key_set
+                    .coefficients()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )),
             SecretKeyShare::from_mut(&mut self.secret_key_share),
         )
+    }
+
+    pub fn aggregated_pub_key(&self) -> AggregatePublicKey {
+        AggregatePublicKey(self.public_key_set.evaluate(0).to_affine())
+    }
+
+    pub fn pub_key_share(&self, peer: PeerId) -> PublicKeyShare {
+        PublicKeyShare(self.public_key_set.evaluate(scalar(&peer)).to_affine())
+    }
+
+    pub fn secret_key_share(&self) -> tbs::SecretKeyShare {
+        tbs::SecretKeyShare(self.secret_key_share)
     }
 }
 
@@ -285,6 +304,7 @@ mod tests {
     use rand07::rngs::OsRng;
     use std::collections::{HashMap, VecDeque};
     use std::ops::Mul;
+    use tbs::{Aggregatable, AggregatePublicKey};
     use tracing::warn;
 
     #[test_log::test]
@@ -300,18 +320,18 @@ mod tests {
 
         for peer in &peers {
             let (dkg, step) = DkgRunner::new(&peer, &peers, max_evil, &mut rng);
-            dkgs.insert(peer.clone(), dkg);
-            steps.push_back((peer.clone(), step));
+            dkgs.insert(*peer, dkg);
+            steps.push_back((*peer, step));
         }
 
         while keys.len() < peers.len() {
             while let Some((send_peer, step)) = steps.pop_front() {
                 for (receive_peer, msg) in &step.messages {
                     let receive_dkg = dkgs.get_mut(&receive_peer).unwrap();
-                    let step = receive_dkg.step(send_peer.clone(), msg.clone());
+                    let step = receive_dkg.step(send_peer, msg.clone());
 
                     if step.messages.len() > 0 {
-                        steps.push_back((receive_peer.clone(), step.clone()))
+                        steps.push_back((*receive_peer, step.clone()))
                     }
 
                     if let Some(step_keys) = step.keys {
@@ -322,14 +342,20 @@ mod tests {
         }
 
         for (peer, keys) in keys {
+            let ext_agg_key = peers
+                .iter()
+                .copied()
+                .map(|peer| keys.pub_key_share(peer))
+                .collect::<Vec<_>>()
+                .aggregate(num_peers - max_evil);
+            assert_eq!(keys.aggregated_pub_key(), ext_agg_key);
+            assert_eq!(
+                keys.secret_key_share().to_pub_key_share(),
+                keys.pub_key_share(peer)
+            );
+
             let (pk, sk) = keys.threshold_crypto();
-            if pk.public_key_share(scalar(&peer)) == sk.public_key_share() {
-                warn!("OK");
-            } else {
-                warn!("BAD");
-            }
-            // assert_eq!(pk.public_key_share(scalar(&peer)), sk.public_key_share());
+            assert_eq!(pk.public_key_share(peer.to_usize()), sk.public_key_share());
         }
-        assert!(false);
     }
 }
