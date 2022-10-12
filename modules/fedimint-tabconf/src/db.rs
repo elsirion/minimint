@@ -1,3 +1,4 @@
+use crate::BetResolutionProposal;
 use fedimint_api::db::DatabaseKeyPrefixConst;
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::{Amount, PeerId};
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 const DB_PREFIX_USER_BET_KEY: u8 = 0x50;
 const DB_PREFIX_BET_RESOLUTION_KEY: u8 = 0x51;
+const DB_PREFIX_BET_RESOLUTION_PROPOSAL_KEY: u8 = 0x52;
 
 /// Database key for a user bet, containing the height at which it will be resolved and the price
 /// the user thinks will be closest to the actual BTC price. The value associated with the key is
@@ -72,4 +74,20 @@ pub struct ResolvedBet {
 pub struct BetResolutionProposalKey {
     pub resolve_consensus_height: u64,
     pub peer: PeerId,
+}
+
+impl DatabaseKeyPrefixConst for BetResolutionProposalKey {
+    const DB_PREFIX: u8 = DB_PREFIX_BET_RESOLUTION_PROPOSAL_KEY;
+    type Key = Self;
+    type Value = BetResolutionProposal;
+}
+
+pub struct BetResolutionProposalKeyPrefix {
+    pub resolve_consensus_height: u64,
+}
+
+impl DatabaseKeyPrefixConst for BetResolutionProposalKeyPrefix {
+    const DB_PREFIX: u8 = DB_PREFIX_BET_RESOLUTION_PROPOSAL_KEY;
+    type Key = BetResolutionProposalKey;
+    type Value = BetResolutionProposal;
 }

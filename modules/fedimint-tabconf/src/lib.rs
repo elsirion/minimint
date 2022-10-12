@@ -1,6 +1,9 @@
 mod db;
 
-use crate::db::{BetResolutionKey, BetResolutionKeyPrefix, ResolvedBet, UserBetKey};
+use crate::db::{
+    BetResolutionKey, BetResolutionKeyPrefix, BetResolutionProposalKey,
+    BetResolutionProposalKeyPrefix, ResolvedBet, UserBetKey, UserBetKeyPrefix,
+};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use fedimint_api::config::GenerateConfig;
@@ -14,11 +17,12 @@ use fedimint_api::module::{
     api_endpoint, ApiEndpoint, ApiError, FederationModule, TransactionItemAmount,
 };
 use fedimint_api::net::peers::AnyPeerConnections;
-use fedimint_api::{Amount, InputMeta, OutPoint, PeerId};
+use fedimint_api::{Amount, InputMeta, NumPeers, OutPoint, PeerId};
 use rand::{CryptoRng, RngCore};
 use secp256k1::XOnlyPublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use tracing::warn;
 
 pub struct TabconfModule {
     db: Database,
@@ -27,6 +31,8 @@ pub struct TabconfModule {
 
 #[derive(Debug, Clone, Copy, Encodable, Decodable, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct TabconfConfig {
+    pub our_id: PeerId,
+    pub peers: Vec<PeerId>,
     pub bet_size: Amount,
 }
 
@@ -45,6 +51,7 @@ pub struct RedeemPrize {
 
 #[derive(Debug, Clone, Copy, Encodable, Decodable, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct BetResolutionProposal {
+    consensus_height: u64,
     moscow_time: u64,
 }
 
@@ -69,8 +76,16 @@ impl TabconfModule {
             return false;
         }
 
-        //let we_proposed = self.db.get_value(&Re)
-        unimplemented!()
+        let we_proposed = self
+            .db
+            .get_value(&BetResolutionProposalKey {
+                resolve_consensus_height: consensus_block_height,
+                peer: self.cfg.our_id,
+            })
+            .expect("DB error")
+            .is_none();
+
+        we_proposed
     }
 
     fn propose_resolution(&self) -> BetResolutionProposal {
@@ -111,15 +126,11 @@ impl FederationModule for TabconfModule {
         interconnect: &dyn ModuleInterconect,
         _rng: impl RngCore + CryptoRng + 'a,
     ) -> Vec<Self::ConsensusItem> {
-        // let consensus_block_height = block_height(interconnect).await as u64;
-        // let last_resolved_consensus_block_height = self.last_resolved_bet_height();
-        //
-        // if last_resolved_consensus_block_height != consensus_block_height {
-        //     vec![self.propose_resolution()]
-        // } else {
-        //     vec![]
-        // }
-        vec![]
+        if self.should_resolve(interconnect) {
+            vec![self.propose_resolution()]
+        } else {
+            vec![]
+        }
     }
 
     /// This function is called once before transaction processing starts. All module consensus
@@ -128,10 +139,79 @@ impl FederationModule for TabconfModule {
     /// when processing transactions.
     async fn begin_consensus_epoch<'a>(
         &'a self,
-        _dbtx: &mut DatabaseTransaction<'a>,
-        _consensus_items: Vec<(PeerId, Self::ConsensusItem)>,
+        dbtx: &mut DatabaseTransaction<'a>,
+        consensus_items: Vec<(PeerId, Self::ConsensusItem)>,
         _rng: impl RngCore + CryptoRng + 'a,
     ) {
+        for (peer, ci) in consensus_items {
+            if dbtx
+                .get_value(&BetResolutionKey {
+                    resolve_consensus_height: ci.consensus_height,
+                })
+                .expect("DB error")
+                .is_some()
+            {
+                warn!(?peer, "Bet already resolved");
+                continue;
+            }
+
+            if dbtx
+                .get_value(&BetResolutionProposalKey {
+                    resolve_consensus_height: ci.consensus_height,
+                    peer,
+                })
+                .expect("DB error")
+                .is_some()
+            {
+                warn!(?peer, "Peer already contributed to bet resolution");
+                continue;
+            }
+
+            dbtx.insert_entry(
+                &BetResolutionProposalKey {
+                    resolve_consensus_height: ci.consensus_height,
+                    peer,
+                },
+                &ci,
+            )
+        }
+
+        let height_to_resolve = self.last_resolved_bet_height() + 1;
+        let mut resolution_proposals = dbtx
+            .find_by_prefix(&BetResolutionProposalKeyPrefix {
+                resolve_consensus_height: height_to_resolve,
+            })
+            .map(|res| res.expect("DB error").1.moscow_time)
+            .collect::<Vec<_>>();
+
+        if resolution_proposals.len() >= self.cfg.peers.max_evil() {
+            resolution_proposals.sort();
+            let consensus_moscow_time = resolution_proposals[resolution_proposals.len() / 2];
+
+            let user_proposals = dbtx
+                .find_by_prefix(&UserBetKeyPrefix {
+                    resolve_consensus_height: height_to_resolve,
+                })
+                .map(|res| {
+                    let (key, value) = res.expect("DB error");
+                    let error = key.moscow_time.abs_diff(consensus_moscow_time);
+                    (error, key.moscow_time, value)
+                })
+                .collect::<Vec<_>>();
+
+            dbtx.insert_entry(
+                &BetResolutionKey {
+                    resolve_consensus_height: height_to_resolve,
+                },
+                ResolvedBet {
+                    winner: (),
+                    user_moscow_time: 0,
+                    consensus_moscow_time,
+                    prize: Amount {},
+                    paid_out: false,
+                },
+            )
+        }
     }
 
     /// Some modules may have slow to verify inputs that would block transaction processing. If the
