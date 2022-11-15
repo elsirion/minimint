@@ -74,7 +74,7 @@ impl LnRpc for Mutex<cln_rpc::ClnRpc> {
             .await
             .call(cln_rpc::Request::Pay(model::PayRequest {
                 bolt11: invoice.to_string(),
-                msatoshi: None,
+                amount_msat: None,
                 label: None,
                 riskfactor: None,
                 maxfeepercent: Some(max_fee_percent),
