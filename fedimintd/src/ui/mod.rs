@@ -288,7 +288,7 @@ async fn post_federation_params(
 ) -> Result<Redirect, (StatusCode, String)> {
     let mut state = state.write().unwrap();
 
-    let port = portpicker::pick_unused_port().expect("No ports free");
+    let port = 5002;
 
     let config_string = create_cert(
         state.cfg_path.clone(),
