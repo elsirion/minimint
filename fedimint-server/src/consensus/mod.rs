@@ -244,7 +244,18 @@ impl FedimintConsensus {
                         .expect("DB Error");
 
                     dbtx.set_tx_savepoint();
-                    // TODO: use borrowed transaction
+
+                    // TODO: @dpc eventually we need to distinguish between skipped tx from this and
+                    // previous epochs to only include the ones from previous epoch in the "invalid tx" list
+                    if dbtx
+                        .get_value(&AcceptedTransactionKey(transaction.tx_hash()))
+                        .expect("DB error")
+                        .is_some()
+                    {
+                        debug!("Transaction was already successfully processed, skipping");
+                        return;
+                    }
+
                     match self
                         .process_transaction(&mut dbtx, transaction.clone(), &caches)
                         .await
