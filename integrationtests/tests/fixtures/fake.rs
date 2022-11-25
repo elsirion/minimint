@@ -80,7 +80,7 @@ impl LnRpc for FakeLightningTest {
         &self,
         invoice: lightning_invoice::Invoice,
         _max_delay: u64,
-        _max_fee_percent: f64,
+        _max_fee: Amount,
     ) -> Result<Preimage, LightningError> {
         *self.amount_sent.lock().unwrap() += invoice.amount_milli_satoshis().unwrap();
 

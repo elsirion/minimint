@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use fedimint_api::Amount;
 use fedimint_server::modules::ln::contracts::Preimage;
 use secp256k1::PublicKey;
 
@@ -12,7 +13,7 @@ pub trait LnRpc: Send + Sync + 'static {
         &self,
         invoice: lightning_invoice::Invoice,
         max_delay: u64,
-        max_fee_percent: f64,
+        max_fee: Amount,
     ) -> Result<Preimage, LightningError>;
 }
 

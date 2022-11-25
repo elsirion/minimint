@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bitcoin::{secp256k1, KeyPair};
 use fedimint_api::task::TaskGroup;
+use fedimint_api::Amount;
 use fedimint_ln::contracts::Preimage;
 use lightning_invoice::Invoice;
 use ln_gateway::{
@@ -66,7 +67,7 @@ impl LnRpc for MockLnRpc {
         &self,
         invoice: Invoice,
         _max_delay: u64,
-        _max_fee_percent: f64,
+        _max_fee: Amount,
     ) -> Result<Preimage, LightningError> {
         *self.amount_sent.lock().unwrap() += invoice.amount_milli_satoshis().unwrap();
 
