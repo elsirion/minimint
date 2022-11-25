@@ -90,7 +90,7 @@ use crate::{
     wallet::WalletClient,
 };
 
-const TIMELOCK: u64 = 100;
+const TIMELOCK: u64 = 300;
 const MINT_SECRET_CHILD_ID: ChildId = ChildId(0);
 
 type Result<T> = std::result::Result<T, ClientError>;
