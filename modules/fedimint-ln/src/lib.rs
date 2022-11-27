@@ -886,7 +886,7 @@ plugin_types_trait_impl!(
     LightningVerificationCache
 );
 
-async fn block_height(interconnect: &dyn ModuleInterconect) -> u32 {
+async fn block_height(interconnect: &dyn ModuleInterconect<'_>) -> u32 {
     // This is a future because we are normally reading from a network socket. But for internal
     // calls the data is available instantly in one go, so we can just block on it.
     let body = interconnect

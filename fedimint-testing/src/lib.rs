@@ -295,7 +295,7 @@ impl FakeInterconnect {
 }
 
 #[async_trait(?Send)]
-impl ModuleInterconect for FakeInterconnect {
+impl<'a> ModuleInterconect<'a> for FakeInterconnect {
     async fn call(
         &self,
         module: &'static str,

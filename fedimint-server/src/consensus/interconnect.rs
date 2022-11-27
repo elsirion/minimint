@@ -10,7 +10,7 @@ pub struct FedimintInterconnect<'a> {
 }
 
 #[async_trait(?Send)]
-impl<'a> ModuleInterconect for FedimintInterconnect<'a> {
+impl<'a> ModuleInterconect<'a> for FedimintInterconnect<'a> {
     async fn call(
         &self,
         module_name: &'static str,
