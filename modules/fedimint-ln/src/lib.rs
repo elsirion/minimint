@@ -342,7 +342,8 @@ impl ServerModulePlugin for LightningModule {
 
         let pub_key = match account.contract {
             FundedContract::Outgoing(outgoing) => {
-                if outgoing.timelock > block_height(interconnect).await && !outgoing.cancelled {
+                if outgoing.timelock > block_height(dbtx, interconnect).await && !outgoing.cancelled
+                {
                     // If the timelock hasn't expired yet …
                     let preimage_hash = bitcoin_hashes::sha256::Hash::hash(
                         &input
@@ -886,11 +887,19 @@ plugin_types_trait_impl!(
     LightningVerificationCache
 );
 
-async fn block_height(interconnect: &dyn ModuleInterconect<'_>) -> u32 {
+async fn block_height(
+    dbtx: &mut DatabaseTransaction<'_>,
+    interconnect: &dyn ModuleInterconect<'_>,
+) -> u32 {
     // This is a future because we are normally reading from a network socket. But for internal
     // calls the data is available instantly in one go, so we can just block on it.
     let body = interconnect
-        .call("wallet", "/block_height".to_owned(), Default::default())
+        .call(
+            dbtx,
+            "wallet",
+            "/block_height".to_owned(),
+            Default::default(),
+        )
         .await
         .expect("Wallet module not present or malfunctioning!");
 

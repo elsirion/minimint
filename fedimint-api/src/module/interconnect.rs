@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use fedimint_api::db::DatabaseTransaction;
 
 use super::ApiError;
 
@@ -9,6 +10,7 @@ pub trait ModuleInterconect<'a>: Sync + Send + 'a {
     /// This has lower latency.
     async fn call<'b>(
         &'b self,
+        dbtx: &mut DatabaseTransaction<'_>,
         module: &'static str,
         path: String,
         data: serde_json::Value,

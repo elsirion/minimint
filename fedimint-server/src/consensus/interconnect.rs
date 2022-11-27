@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use fedimint_api::db::DatabaseTransaction;
 use fedimint_api::module::interconnect::ModuleInterconect;
 use fedimint_api::module::ApiError;
 use serde_json::Value;
@@ -13,6 +14,7 @@ pub struct FedimintInterconnect<'a> {
 impl<'a> ModuleInterconect<'a> for FedimintInterconnect<'a> {
     async fn call(
         &self,
+        _dbtx: &mut DatabaseTransaction<'_>,
         module_name: &'static str,
         path: String,
         data: Value,

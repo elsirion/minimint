@@ -298,6 +298,7 @@ impl FakeInterconnect {
 impl<'a> ModuleInterconect<'a> for FakeInterconnect {
     async fn call(
         &self,
+        _dbtx: &mut DatabaseTransaction<'_>,
         module: &'static str,
         path: String,
         data: serde_json::Value,
