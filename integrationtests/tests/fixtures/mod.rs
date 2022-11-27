@@ -550,13 +550,14 @@ impl FederationTest {
     }
 
     /// Submit a fedimint transaction to all federation servers
-    pub fn submit_transaction(&self, transaction: fedimint_server::transaction::Transaction) {
+    pub async fn submit_transaction(&self, transaction: fedimint_server::transaction::Transaction) {
         for server in &self.servers {
             server
                 .borrow_mut()
                 .fedimint
                 .consensus
                 .submit_transaction(transaction.clone())
+                .await
                 .unwrap();
         }
     }

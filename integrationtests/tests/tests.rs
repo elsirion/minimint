@@ -831,7 +831,7 @@ async fn receive_lightning_payment_invalid_preimage() -> Result<()> {
             rng(),
         )
         .await;
-    fed.submit_transaction(tx.into_type_erased());
+    fed.submit_transaction(tx.into_type_erased()).await;
     fed.run_consensus_epochs(1).await; // process offer
 
     // Gateway escrows ecash to trigger preimage decryption by the federation
