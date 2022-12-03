@@ -451,7 +451,7 @@ where
                 path,
                 handler: Box::new(
                     move |module: &ServerModule,
-                          dbtx: fedimint_api::db::DatabaseTransaction<'_>,
+                          dbtx: &mut fedimint_api::db::DatabaseTransaction<'_>,
                           value: serde_json::Value| {
                         let typed_module = module
                             .as_any()

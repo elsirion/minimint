@@ -101,12 +101,12 @@ fn attach_endpoints(
             .register_async_method(path, move |params, state| async move {
                 let params = params.one::<serde_json::Value>()?;
                 let fedimint = &state.fedimint;
-                let dbtx = fedimint.database_transaction();
+                let mut dbtx = fedimint.database_transaction();
                 // Using AssertUnwindSafe here is far from ideal. In theory this means we could
                 // end up with an inconsistent state in theory. In practice most API functions
                 // are only reading and the few that do write anything are atomic. Lastly, this
                 // is only the last line of defense
-                AssertUnwindSafe((handler)(fedimint, dbtx, params))
+                let res = AssertUnwindSafe((handler)(fedimint, &mut dbtx, params))
                     .catch_unwind()
                     .await
                     .map_err(|_| {
@@ -121,7 +121,12 @@ fn attach_endpoints(
                         jsonrpsee::core::Error::Call(CallError::Custom(ErrorObject::owned(
                             e.code, e.message, None::<()>,
                         )))
-                    })
+                    })?;
+
+                dbtx.commit_tx()
+                    .await
+                    .map_err(|e| jsonrpsee::core::Error::Call(CallError::Failed(e)))?;
+                Ok(res)
             })
             .expect("Failed to register async method");
     }
@@ -147,17 +152,17 @@ fn attach_endpoints_erased(
                 // Hack to avoid Sync/Send issues
                 let params = params.one::<serde_json::Value>()?;
                 let fedimint = &state.fedimint;
-                let dbtx = fedimint.database_transaction();
+                let mut dbtx = fedimint.database_transaction();
                 // Using AssertUnwindSafe here is far from ideal. In theory this means we could
                 // end up with an inconsistent state in theory. In practice most API functions
                 // are only reading and the few that do write anything are atomic. Lastly, this
                 // is only the last line of defense
-                AssertUnwindSafe((handler)(
+                let res = AssertUnwindSafe((handler)(
                     fedimint
                         .modules
                         .get(&module_key)
                         .expect("Module exists if it was registered"),
-                    dbtx,
+                    &mut dbtx,
                     params,
                 ))
                 .catch_unwind()
@@ -174,7 +179,12 @@ fn attach_endpoints_erased(
                     jsonrpsee::core::Error::Call(CallError::Custom(ErrorObject::owned(
                         e.code, e.message, None::<()>,
                     )))
-                })
+                })?;
+
+                dbtx.commit_tx()
+                    .await
+                    .map_err(|e| jsonrpsee::core::Error::Call(CallError::Failed(e)))?;
+                Ok(res)
             })
             .expect("Failed to register async method");
     }

@@ -324,9 +324,10 @@ impl FakeInterconnect {
 }
 
 #[async_trait]
-impl ModuleInterconect for FakeInterconnect {
+impl<'a> ModuleInterconect<'a> for FakeInterconnect {
     async fn call(
-        &self,
+        &'a self,
+        _dbtx: &'a mut DatabaseTransaction<'a>,
         module: &'static str,
         path: String,
         data: serde_json::Value,

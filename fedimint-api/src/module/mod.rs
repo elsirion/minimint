@@ -77,7 +77,7 @@ pub trait TypedApiEndpoint {
 
     async fn handle<'a, 'b>(
         state: &'a Self::State,
-        dbtx: fedimint_api::db::DatabaseTransaction<'b>,
+        dbtx: &'a mut fedimint_api::db::DatabaseTransaction<'b>,
         params: Self::Param,
     ) -> Result<Self::Response, ApiError>;
 }
@@ -117,7 +117,7 @@ macro_rules! __api_endpoint {
 
             async fn handle<'a, 'b>(
                 $state: &'a Self::State,
-                mut $dbtx: fedimint_api::db::DatabaseTransaction<'b>,
+                $dbtx: &'a mut fedimint_api::db::DatabaseTransaction<'b>,
                 $param: Self::Param,
             ) -> ::std::result::Result<Self::Response, $crate::module::ApiError> {
                 $body
@@ -148,7 +148,7 @@ type HandlerFnReturn<'a> = BoxFuture<'a, Result<serde_json::Value, ApiError>>;
 type HandlerFn<M> = Box<
     dyn for<'a> Fn(
             &'a M,
-            fedimint_api::db::DatabaseTransaction<'a>,
+            &'a mut fedimint_api::db::DatabaseTransaction<'a>,
             serde_json::Value,
         ) -> HandlerFnReturn<'a>
         + Send

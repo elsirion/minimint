@@ -670,8 +670,7 @@ impl ServerModulePlugin for Mint {
                 "/backup",
                 async |module: &Mint, dbtx, request: SignedBackupRequest| -> () {
                     module
-                        .handle_backup_request(&mut dbtx, request).await?;
-                    dbtx.commit_tx().await.map_err(|e| ApiError::new(1000, format!("Transaction error: {}", e)))?;
+                        .handle_backup_request(dbtx, request).await?;
                     Ok(())
                 }
             },
@@ -679,7 +678,7 @@ impl ServerModulePlugin for Mint {
                 "/recover",
                 async |module: &Mint, dbtx, id: secp256k1_zkp::XOnlyPublicKey| -> Vec<u8> {
                     module
-                        .handle_recover_request(&mut dbtx, id).await
+                        .handle_recover_request(dbtx, id).await
                         .ok_or_else(|| ApiError::not_found(String::from("Backup not found")))
                 }
             },

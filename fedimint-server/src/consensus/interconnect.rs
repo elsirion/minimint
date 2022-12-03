@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use fedimint_api::db::DatabaseTransaction;
 use fedimint_api::module::interconnect::ModuleInterconect;
 use fedimint_api::module::ApiError;
 use serde_json::Value;
@@ -10,9 +11,10 @@ pub struct FedimintInterconnect<'a> {
 }
 
 #[async_trait]
-impl<'a> ModuleInterconect for FedimintInterconnect<'a> {
+impl<'a> ModuleInterconect<'a> for FedimintInterconnect<'a> {
     async fn call(
-        &self,
+        &'a self,
+        dbtx: &'a mut DatabaseTransaction<'a>,
         module_name: &'static str,
         path: String,
         data: Value,
@@ -25,8 +27,7 @@ impl<'a> ModuleInterconect for FedimintInterconnect<'a> {
                     .find(|endpoint| endpoint.path == path)
                     .ok_or_else(|| ApiError::not_found(String::from("Method not found")))?;
 
-                return (endpoint.handler)(module, self.fedimint.database_transaction(), data)
-                    .await;
+                return (endpoint.handler)(module, dbtx, data).await;
             }
         }
         panic!("Module not registered: {}", module_name);

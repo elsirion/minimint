@@ -385,7 +385,8 @@ impl ServerModulePlugin for LightningModule {
 
         let pub_key = match account.contract {
             FundedContract::Outgoing(outgoing) => {
-                if outgoing.timelock > block_height(interconnect).await && !outgoing.cancelled {
+                if outgoing.timelock > block_height(interconnect, dbtx).await && !outgoing.cancelled
+                {
                     // If the timelock hasn't expired yet …
                     let preimage_hash = bitcoin_hashes::sha256::Hash::hash(
                         &input
@@ -820,21 +821,21 @@ impl ServerModulePlugin for LightningModule {
                 "/account",
                 async |module: &LightningModule, dbtx, contract_id: ContractId| -> ContractAccount {
                     module
-                        .get_contract_account(&mut dbtx, contract_id)
+                        .get_contract_account(dbtx, contract_id)
                         .ok_or_else(|| ApiError::not_found(String::from("Contract not found")))
                 }
             },
             api_endpoint! {
                 "/offers",
                 async |module: &LightningModule, dbtx, _params: ()| -> Vec<IncomingContractOffer> {
-                    Ok(module.get_offers(&mut dbtx))
+                    Ok(module.get_offers(dbtx))
                 }
             },
             api_endpoint! {
                 "/offer",
                 async |module: &LightningModule, dbtx, payment_hash: bitcoin_hashes::sha256::Hash| -> IncomingContractOffer {
                     let offer = module
-                        .get_offer(&mut dbtx, payment_hash)
+                        .get_offer(dbtx, payment_hash)
                         .ok_or_else(|| ApiError::not_found(String::from("Offer not found")))?;
 
                     debug!(%payment_hash, "Sending offer info");
@@ -844,14 +845,13 @@ impl ServerModulePlugin for LightningModule {
             api_endpoint! {
                 "/list_gateways",
                 async |module: &LightningModule, dbtx, _v: ()| -> Vec<LightningGateway> {
-                    Ok(module.list_gateways(&mut dbtx))
+                    Ok(module.list_gateways(dbtx))
                 }
             },
             api_endpoint! {
                 "/register_gateway",
                 async |module: &LightningModule, dbtx, gateway: LightningGateway| -> () {
-                    module.register_gateway(&mut dbtx, gateway).await;
-                    dbtx.commit_tx().await.expect("DB Error");
+                    module.register_gateway(dbtx, gateway).await;
                     Ok(())
                 }
             },
@@ -924,11 +924,19 @@ plugin_types_trait_impl!(
     LightningVerificationCache
 );
 
-async fn block_height(interconnect: &dyn ModuleInterconect) -> u32 {
+async fn block_height<'a>(
+    interconnect: &'a dyn ModuleInterconect<'a>,
+    dbtx: &'a mut DatabaseTransaction<'a>,
+) -> u32 {
     // This is a future because we are normally reading from a network socket. But for internal
     // calls the data is available instantly in one go, so we can just block on it.
     let body = interconnect
-        .call("wallet", "/block_height".to_owned(), Default::default())
+        .call(
+            dbtx,
+            "wallet",
+            "/block_height".to_owned(),
+            Default::default(),
+        )
         .await
         .expect("Wallet module not present or malfunctioning!");
 

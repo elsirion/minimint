@@ -1,14 +1,16 @@
 use async_trait::async_trait;
 
 use super::ApiError;
+use crate::db::DatabaseTransaction;
 
 /// Provides an interface to call APIs of other modules
 #[async_trait]
-pub trait ModuleInterconect: Sync + Send {
+pub trait ModuleInterconect<'a>: Sync + Send {
     /// Simulates a call to an API endpoint of another module.
     /// This has lower latency.
     async fn call(
-        &self,
+        &'a self,
+        dbtx: &'a mut DatabaseTransaction<'a>,
         module: &'static str,
         path: String,
         data: serde_json::Value,

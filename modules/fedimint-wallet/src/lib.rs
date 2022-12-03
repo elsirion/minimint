@@ -756,18 +756,18 @@ impl ServerModulePlugin for Wallet {
             api_endpoint! {
                 "/block_height",
                 async |module: &Wallet, dbtx, _params: ()| -> u32 {
-                    Ok(module.consensus_height(&mut dbtx).unwrap_or(0))
+                    Ok(module.consensus_height(dbtx).unwrap_or(0))
                 }
             },
             api_endpoint! {
                 "/peg_out_fees",
                 async |module: &Wallet, dbtx, params: (Address, u64)| -> Option<PegOutFees> {
                     let (address, sats) = params;
-                    let consensus = module.current_round_consensus(&mut dbtx).unwrap();
+                    let consensus = module.current_round_consensus(dbtx).unwrap();
                     let tx = module.offline_wallet().create_tx(
                         bitcoin::Amount::from_sat(sats),
                         address.script_pubkey(),
-                        module.available_utxos(&mut dbtx),
+                        module.available_utxos(dbtx),
                         consensus.fee_rate,
                         &consensus.randomness_beacon
                     );
