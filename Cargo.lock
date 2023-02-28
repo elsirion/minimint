@@ -1326,6 +1326,7 @@ dependencies = [
  "console-subscriber",
  "fedimint-build",
  "fedimint-core",
+ "fedimint-dummy",
  "fedimint-ln",
  "fedimint-logging",
  "fedimint-mint",
