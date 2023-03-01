@@ -376,9 +376,9 @@ impl ServerModule for Dummy {
 
     fn api_endpoints(&self) -> Vec<ApiEndpoint<Self>> {
         vec![api_endpoint! {
-            "/dummy",
-            async |_module: &Dummy, _dbtx, _request: ()| -> () {
-                Ok(())
+            "/last_bet",
+            async |_module: &Dummy, dbtx, _request: ()| -> Option<BetOutcome> {
+                Ok(Dummy::last_bet_outcome(dbtx).await)
             }
         }]
     }
@@ -420,6 +420,25 @@ impl Dummy {
         )
     }
 
+    pub async fn last_bet_outcome(dbtx: &mut DatabaseTransaction<'_>) -> Option<BetOutcome> {
+        let mut all_rounds: Vec<(SystemTime, u64)> = dbtx
+            .find_by_prefix(&BetRoundPriceKeyPrefix)
+            .await
+            .map(|kvres| {
+                let (k, v) = kvres.expect("DB error");
+                (k.round, v.price_usd_per_btc)
+            })
+            .collect()
+            .await;
+
+        all_rounds.sort_by(|(round1, _), (round2, _)| round1.cmp(round2));
+
+        all_rounds.last().map(|(round, price)| BetOutcome {
+            round: *round,
+            price_usd_per_btc: *price,
+        })
+    }
+
     async fn fetch_price(&self) -> Option<u64> {
         let api_response = reqwest::get(self.cfg.consensus.price_api.clone())
             .await
@@ -445,6 +464,12 @@ plugin_types_trait_impl!(
     DummyConsensusItem,
     DummyVerificationCache
 );
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BetOutcome {
+    round: SystemTime,
+    price_usd_per_btc: u64,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Error)]
 pub enum DummyError {
