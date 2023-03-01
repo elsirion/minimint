@@ -30,3 +30,4 @@ impl-tools = "0.8.0"
 thiserror = "1.0.37"
 fedimint-server = { path = "../../fedimint-server", optional = true  }
 tracing = "0.1.37"
+url = "2.3.1"

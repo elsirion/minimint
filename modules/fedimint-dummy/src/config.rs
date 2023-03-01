@@ -7,14 +7,12 @@ use fedimint_core::encoding::Encodable;
 use fedimint_core::module::__reexports::serde_json;
 use fedimint_core::PeerId;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::KIND;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DummyConfig {
-    /// Contains all configuration that will be encrypted such as private key
-    /// material
-    pub private: DummyConfigPrivate,
     /// Contains all configuration that needs to be the same for every
     /// federation member
     pub consensus: DummyConfigConsensus,
@@ -22,17 +20,12 @@ pub struct DummyConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Encodable)]
 pub struct DummyConfigConsensus {
-    pub something: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DummyConfigPrivate {
-    pub something_private: u64,
+    pub price_api: Url,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Encodable)]
 pub struct DummyClientConfig {
-    pub something: u64,
+    pub price_api: Url,
 }
 
 impl TypedClientModuleConfig for DummyClientConfig {
@@ -46,7 +39,7 @@ impl TypedServerModuleConsensusConfig for DummyConfigConsensus {
         ClientModuleConfig::new(
             KIND,
             serde_json::to_value(&DummyClientConfig {
-                something: self.something,
+                price_api: self.price_api.clone(),
             })
             .expect("Serialization can't fail"),
         )
@@ -55,15 +48,19 @@ impl TypedServerModuleConsensusConfig for DummyConfigConsensus {
 
 impl TypedServerModuleConfig for DummyConfig {
     type Local = ();
-    type Private = DummyConfigPrivate;
+    type Private = ();
     type Consensus = DummyConfigConsensus;
 
-    fn from_parts(_local: Self::Local, private: Self::Private, consensus: Self::Consensus) -> Self {
-        Self { private, consensus }
+    fn from_parts(
+        _local: Self::Local,
+        _private: Self::Private,
+        consensus: Self::Consensus,
+    ) -> Self {
+        Self { consensus }
     }
 
     fn to_parts(self) -> (ModuleKind, Self::Local, Self::Private, Self::Consensus) {
-        (KIND, (), self.private, self.consensus)
+        (KIND, (), (), self.consensus)
     }
 
     fn validate_config(&self, _identity: &PeerId) -> anyhow::Result<()> {

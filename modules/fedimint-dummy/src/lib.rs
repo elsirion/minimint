@@ -25,8 +25,9 @@ use fedimint_core::{plugin_types_trait_impl, OutPoint, PeerId, ServerModule};
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use url::Url;
 
-use crate::config::{DummyClientConfig, DummyConfig, DummyConfigConsensus, DummyConfigPrivate};
+use crate::config::{DummyClientConfig, DummyConfig, DummyConfigConsensus};
 use crate::db::migrate_dummy_db_version_0;
 use crate::serde_json::Value;
 
@@ -34,6 +35,9 @@ pub mod config;
 pub mod db;
 
 const KIND: ModuleKind = ModuleKind::from_static_str("dummy");
+
+// TODO: don't hard code, add config gen params for it
+const PRICE_API: &'static str = "https://www.bitstamp.net/api/v2/ticker/btcusd/";
 
 /// Dummy module
 #[derive(Debug)]
@@ -92,10 +96,9 @@ impl ModuleGen for DummyConfigGenerator {
             .iter()
             .map(|&peer| {
                 let config = DummyConfig {
-                    private: DummyConfigPrivate {
-                        something_private: 3,
+                    consensus: DummyConfigConsensus {
+                        price_api: Url::parse(PRICE_API).expect("Is valid URL"),
                     },
-                    consensus: DummyConfigConsensus { something: 1 },
                 };
                 (peer, config)
             })
@@ -113,10 +116,9 @@ impl ModuleGen for DummyConfigGenerator {
         _params: &ConfigGenParams,
     ) -> DkgResult<ServerModuleConfig> {
         let server = DummyConfig {
-            private: DummyConfigPrivate {
-                something_private: 3,
+            consensus: DummyConfigConsensus {
+                price_api: Url::parse(PRICE_API).expect("Is valid URL"),
             },
-            consensus: DummyConfigConsensus { something: 2 },
         };
 
         Ok(server.to_erased())
