@@ -25,6 +25,7 @@ Idea:
 * Use module consensus items 
 * Returned by [`ServerModule::consensus_proposal`](https://github.com/fedimint/fedimint/blob/3f9e4b59884b5ea495cb36f4f8398df133ff97dc/fedimint-core/src/module/mod.rs#L659) each epoch
 * Given to [`begin_consensus_epoch`](https://github.com/fedimint/fedimint/blob/3f9e4b59884b5ea495cb36f4f8398df133ff97dc/fedimint-core/src/module/mod.rs#LL669C14-L669C35) as input after consensus is achieved and gets processed there
+* Add API endpoint to see last round price
 
 ## Step 3: Implement bet smart contract
 * Create struct saved to DB containing bet details

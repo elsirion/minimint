@@ -1061,6 +1061,7 @@ dependencies = [
  "fedimint-server",
  "futures",
  "impl-tools",
+ "itertools",
  "rand",
  "rayon",
  "reqwest",

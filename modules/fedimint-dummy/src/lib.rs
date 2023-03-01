@@ -24,13 +24,16 @@ use fedimint_core::server::DynServerModule;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::{plugin_types_trait_impl, OutPoint, PeerId, ServerModule};
 use futures::{FutureExt, StreamExt};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::config::{DummyClientConfig, DummyConfig, DummyConfigConsensus};
-use crate::db::{migrate_dummy_db_version_0, BetRoundPriceKeyPrefix};
+use crate::db::{
+    migrate_dummy_db_version_0, BetRoundPrice, BetRoundPriceKey, BetRoundPriceKeyPrefix,
+};
 use crate::serde_json::Value;
 
 pub mod config;
@@ -51,6 +54,7 @@ pub struct Dummy {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
 pub struct DummyConsensusItem {
+    round: SystemTime,
     current_price_usd_per_btc: u64,
 }
 
@@ -251,6 +255,7 @@ impl ServerModule for Dummy {
             let module_cis = match self.fetch_price().await {
                 Some(price) => {
                     vec![DummyConsensusItem {
+                        round: next_bet_round,
                         current_price_usd_per_btc: price,
                     }]
                 }
@@ -267,9 +272,44 @@ impl ServerModule for Dummy {
 
     async fn begin_consensus_epoch<'a, 'b>(
         &'a self,
-        _dbtx: &mut DatabaseTransaction<'b>,
-        _consensus_items: Vec<(PeerId, DummyConsensusItem)>,
+        dbtx: &mut DatabaseTransaction<'b>,
+        consensus_items: Vec<(PeerId, DummyConsensusItem)>,
     ) {
+        // FIXME: insecure, need to check that we actually expect contributions for that
+        // round
+        let rounds = consensus_items
+            .into_iter()
+            .map(|(_peer, ci)| ci)
+            .into_group_map_by(|ci| ci.round);
+
+        for (round, cis) in rounds {
+            // FIXME: insecure, check that there are at least t contributions
+
+            // Calculate the median, ensures that for >=t contributions the
+            // result lies between (inclusive) the contributions of two honest
+            // guardians
+            let mut prices = cis
+                .into_iter()
+                .map(|ci| ci.current_price_usd_per_btc)
+                .collect::<Vec<_>>();
+            prices.sort();
+            let price = prices[prices.len() / 2];
+
+            if dbtx
+                .insert_new_entry(
+                    &BetRoundPriceKey { round },
+                    &BetRoundPrice {
+                        price_usd_per_btc: price,
+                    },
+                )
+                .await
+                .expect("DB error")
+                .is_some()
+            {
+                // FIXME: should never happen, see fixme above
+                warn!("Overwriting old bet price");
+            }
+        }
     }
 
     fn build_verification_cache<'a>(
