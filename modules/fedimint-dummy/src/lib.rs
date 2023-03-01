@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bitcoin_hashes::sha256;
@@ -22,13 +23,14 @@ use fedimint_core::module::{
 use fedimint_core::server::DynServerModule;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::{plugin_types_trait_impl, OutPoint, PeerId, ServerModule};
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::config::{DummyClientConfig, DummyConfig, DummyConfigConsensus};
-use crate::db::migrate_dummy_db_version_0;
+use crate::db::{migrate_dummy_db_version_0, BetRoundPriceKeyPrefix};
 use crate::serde_json::Value;
 
 pub mod config;
@@ -39,6 +41,8 @@ const KIND: ModuleKind = ModuleKind::from_static_str("dummy");
 // TODO: don't hard code, add config gen params for it
 const PRICE_API: &'static str = "https://www.bitstamp.net/api/v2/ticker/btcusd/";
 
+const BET_INTERVAL_SECS: u64 = 60;
+
 /// Dummy module
 #[derive(Debug)]
 pub struct Dummy {
@@ -46,7 +50,9 @@ pub struct Dummy {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
-pub struct DummyConsensusItem;
+pub struct DummyConsensusItem {
+    current_price_usd_per_btc: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct DummyVerificationCache;
@@ -194,7 +200,12 @@ impl fmt::Display for DummyOutputOutcome {
 
 impl fmt::Display for DummyConsensusItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DummyOutputConfirmation")
+        write!(
+            f,
+            "BTC price={}USD, round={}",
+            self.current_price_usd_per_btc,
+            self.round.duration_since(UNIX_EPOCH).unwrap().as_secs()
+        )
     }
 }
 
@@ -220,15 +231,38 @@ impl ServerModule for Dummy {
         )
     }
 
-    async fn await_consensus_proposal(&self, _dbtx: &mut DatabaseTransaction<'_>) {
-        std::future::pending().await
+    async fn await_consensus_proposal(&self, dbtx: &mut DatabaseTransaction<'_>) {
+        let (next_round_time, _) = Dummy::next_bet_time(dbtx).await;
+        let wait_duration = next_round_time
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::from_secs(0))
+            + Duration::from_secs(1);
+        info!("Waiting {}s till next bet round", wait_duration.as_secs());
+        tokio::time::sleep(wait_duration).await
     }
 
     async fn consensus_proposal(
         &self,
-        _dbtx: &mut DatabaseTransaction<'_>,
+        dbtx: &mut DatabaseTransaction<'_>,
     ) -> ConsensusProposal<DummyConsensusItem> {
-        ConsensusProposal::empty()
+        let (next_bet_round, first_round) = Dummy::next_bet_time(dbtx).await;
+        if first_round || SystemTime::now() >= next_bet_round {
+            info!("Contributing price to consensus");
+            let module_cis = match self.fetch_price().await {
+                Some(price) => {
+                    vec![DummyConsensusItem {
+                        current_price_usd_per_btc: price,
+                    }]
+                }
+                None => {
+                    warn!("Didn't contribute a price although we wanted to");
+                    vec![]
+                }
+            };
+            ConsensusProposal::Trigger(module_cis)
+        } else {
+            ConsensusProposal::Contribute(vec![])
+        }
     }
 
     async fn begin_consensus_epoch<'a, 'b>(
@@ -314,6 +348,53 @@ impl Dummy {
     /// Create new module instance
     pub fn new(cfg: DummyConfig) -> Dummy {
         Dummy { cfg }
+    }
+
+    pub async fn next_bet_time(dbtx: &mut DatabaseTransaction<'_>) -> (SystemTime, bool) {
+        // TODO: don't query all rounds just to get the next one
+        let all_round_times: Vec<SystemTime> = dbtx
+            .find_by_prefix(&BetRoundPriceKeyPrefix)
+            .await
+            .map(|kvres| {
+                let (k, _v) = kvres.expect("DB error");
+                k.round
+            })
+            .collect()
+            .await;
+
+        let maybe_last_round = all_round_times.into_iter().max();
+        let first_round = maybe_last_round.is_none();
+        let last_round = maybe_last_round.unwrap_or_else(|| {
+            let current_timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let theoretical_last_round_timestamp =
+                (current_timestamp / BET_INTERVAL_SECS) * BET_INTERVAL_SECS;
+            UNIX_EPOCH + Duration::from_secs(theoretical_last_round_timestamp)
+        });
+
+        (
+            last_round + Duration::from_secs(BET_INTERVAL_SECS),
+            first_round,
+        )
+    }
+
+    async fn fetch_price(&self) -> Option<u64> {
+        let api_response = reqwest::get(self.cfg.consensus.price_api.clone())
+            .await
+            .map_err(|err| warn!(%err, "API returned error"))
+            .ok()?;
+
+        let value: serde_json::Value = api_response
+            .json()
+            .await
+            .map_err(|err| warn!(%err, "API returned invalid json"))
+            .ok()?;
+
+        debug!(?value, "Price API response");
+
+        value.get("last")?.as_str()?.parse().ok()
     }
 }
 
