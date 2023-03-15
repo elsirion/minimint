@@ -44,6 +44,8 @@ pub mod time;
 pub mod transaction;
 pub mod util;
 
+pub const FOO: &str = "baz";
+
 hash_newtype!(
     TransactionId,
     Sha256,
