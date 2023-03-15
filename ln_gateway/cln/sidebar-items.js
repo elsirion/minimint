@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":[["as_fedimint_amount","The core-lightning `htlc_accepted` event’s `amount` field has a “msat” suffix"]],"struct":[["Htlc",""],["HtlcAccepted",""],["Onion",""]]};

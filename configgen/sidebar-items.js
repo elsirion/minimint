@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":[["main",""]],"struct":[["Options","Config generator for Fedimint Federation"]]};
