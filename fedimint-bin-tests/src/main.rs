@@ -962,7 +962,13 @@ async fn reconnect_test(dev_fed: DevFed, process_mgr: &ProcessManager) -> Result
     fed.start_server(process_mgr, 2).await?;
     fed.start_server(process_mgr, 3).await?;
     fed.await_all_peers().await?;
-    info!("fm success: reconnect-test");
+    info!("Federation successfully restarted!");
+
+    fed.kill_server(1).await?;
+    fed.generate_epochs(200).await?;
+    fed.start_server(process_mgr, 1).await?;
+    fed.await_all_peers().await?;
+
     Ok(())
 }
 
