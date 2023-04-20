@@ -4,12 +4,11 @@ use std::ops::Sub;
 
 use bitcoin_hashes::Hash as BitcoinHash;
 use fedimint_core::config::{
-    ConfigGenModuleParams, DkgResult, ModuleConfigResponse, ServerModuleConfig,
-    TypedServerModuleConfig, TypedServerModuleConsensusConfig,
+    ConfigGenModuleParams, DkgResult, ServerModuleConfig, TypedServerModuleConfig,
 };
 use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_WALLET;
 use fedimint_core::db::{Database, DatabaseVersion, ModuleDatabaseTransaction};
-use fedimint_core::encoding::{Decodable, Encodable};
+use fedimint_core::encoding::{Decodable, Encodable, SerdeEncodable};
 use fedimint_core::module::audit::Audit;
 use fedimint_core::module::interconnect::ModuleInterconect;
 use fedimint_core::module::{
@@ -93,7 +92,7 @@ impl ServerModuleGen for LightningGen {
                     peer,
                     LightningConfig {
                         consensus: LightningConfigConsensus {
-                            threshold_pub_keys: pks.clone(),
+                            threshold_pub_keys: SerdeEncodable(pks.clone()),
                             fee_consensus: FeeConsensus::default(),
                         },
                         private: LightningConfigPrivate {
@@ -119,7 +118,7 @@ impl ServerModuleGen for LightningGen {
 
         let server = LightningConfig {
             consensus: LightningConfigConsensus {
-                threshold_pub_keys: keys.public_key_set,
+                threshold_pub_keys: SerdeEncodable(keys.public_key_set),
                 fee_consensus: Default::default(),
             },
             private: LightningConfigPrivate {
@@ -128,18 +127,6 @@ impl ServerModuleGen for LightningGen {
         };
 
         Ok(server.to_erased())
-    }
-
-    fn to_config_response(
-        &self,
-        config: serde_json::Value,
-    ) -> anyhow::Result<ModuleConfigResponse> {
-        let config = serde_json::from_value::<LightningConfigConsensus>(config)?;
-
-        Ok(ModuleConfigResponse {
-            client: config.to_client_config(),
-            consensus_hash: config.consensus_hash()?,
-        })
     }
 
     fn validate_config(&self, identity: &PeerId, config: ServerModuleConfig) -> anyhow::Result<()> {
@@ -652,7 +639,7 @@ impl ServerModule for Lightning {
                 continue;
             }
 
-            let preimage_vec = match self.cfg.consensus.threshold_pub_keys.decrypt(
+            let preimage_vec = match self.cfg.consensus.threshold_pub_keys.0.decrypt(
                 valid_shares
                     .iter()
                     .map(|(peer, share)| (peer.to_usize(), &share.0)),
@@ -806,6 +793,7 @@ impl Lightning {
         self.cfg
             .consensus
             .threshold_pub_keys
+            .0
             .public_key_share(peer.to_usize())
             .verify_decryption_share(&share.0, &message.0)
     }

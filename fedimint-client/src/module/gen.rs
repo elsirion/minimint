@@ -2,7 +2,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use anyhow::bail;
-use bitcoin_hashes::sha256;
 use fedimint_core::config::{
     ClientModuleConfig, CommonModuleGenRegistry, ModuleGenRegistry, TypedClientModuleConfig,
 };
@@ -83,8 +82,6 @@ pub trait IClientModuleGen: IDynCommonModuleGen + Debug + MaybeSend + MaybeSync 
 
     fn module_kind(&self) -> ModuleKind;
 
-    fn hash_client_module(&self, config: serde_json::Value) -> anyhow::Result<sha256::Hash>;
-
     fn as_common(&self) -> &(dyn IDynCommonModuleGen + Send + Sync + 'static);
 
     async fn init(
@@ -119,10 +116,6 @@ where
 
     fn module_kind(&self) -> ModuleKind {
         <Self as ExtendsCommonModuleGen>::Common::KIND
-    }
-
-    fn hash_client_module(&self, config: serde_json::Value) -> anyhow::Result<sha256::Hash> {
-        <Self as ExtendsCommonModuleGen>::Common::hash_client_module(config)
     }
 
     fn as_common(&self) -> &(dyn IDynCommonModuleGen + Send + Sync + 'static) {

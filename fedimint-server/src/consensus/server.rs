@@ -148,7 +148,7 @@ impl ConsensusServer {
         .await?;
 
         for (module_id, module_cfg) in &cfg.consensus.modules {
-            let kind = module_cfg.kind();
+            let kind = &module_cfg.kind;
 
             let Some(init) = module_inits.get(kind) else {
                 bail!("Detected configuration for unsupported module kind: {kind}")

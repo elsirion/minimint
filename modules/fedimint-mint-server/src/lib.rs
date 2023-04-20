@@ -4,12 +4,10 @@ use std::iter::FromIterator;
 use std::ops::Sub;
 
 use fedimint_core::config::{
-    ConfigGenModuleParams, DkgResult, ModuleConfigResponse, ModuleGenParams, ServerModuleConfig,
-    TypedServerModuleConfig, TypedServerModuleConsensusConfig,
+    ConfigGenModuleParams, DkgResult, ModuleGenParams, ServerModuleConfig, TypedServerModuleConfig,
 };
 use fedimint_core::db::{Database, DatabaseVersion, ModuleDatabaseTransaction};
-use fedimint_core::encoding::Encodable;
-use fedimint_core::module::__reexports::serde_json;
+use fedimint_core::encoding::SerdeEncodable;
 use fedimint_core::module::audit::Audit;
 use fedimint_core::module::interconnect::ModuleInterconect;
 use fedimint_core::module::{
@@ -118,7 +116,10 @@ impl ServerModuleGen for MintGen {
                                     .mint_amounts
                                     .iter()
                                     .map(|amount| {
-                                        (*amount, tbs_keys[amount].1[key_peer.to_usize()])
+                                        (
+                                            *amount,
+                                            SerdeEncodable(tbs_keys[amount].1[key_peer.to_usize()]),
+                                        )
                                     })
                                     .collect();
                                 (key_peer, keys)
@@ -177,9 +178,9 @@ impl ServerModuleGen for MintGen {
                             .iter()
                             .map(|(amount, (pks, _))| {
                                 let pks = PublicKeyShare(pks.evaluate(scalar(peer)).to_affine());
-                                (*amount, pks)
+                                (*amount, SerdeEncodable(pks))
                             })
-                            .collect::<Tiered<PublicKeyShare>>();
+                            .collect::<Tiered<_>>();
 
                         (*peer, pks)
                     })
@@ -190,18 +191,6 @@ impl ServerModuleGen for MintGen {
         };
 
         Ok(server.to_erased())
-    }
-
-    fn to_config_response(
-        &self,
-        config: serde_json::Value,
-    ) -> anyhow::Result<ModuleConfigResponse> {
-        let config = serde_json::from_value::<MintConfigConsensus>(config)?;
-
-        Ok(ModuleConfigResponse {
-            client: config.to_client_config(),
-            consensus_hash: config.consensus_hash()?,
-        })
     }
 
     fn validate_config(&self, identity: &PeerId, config: ServerModuleConfig) -> anyhow::Result<()> {
@@ -720,7 +709,13 @@ impl Mint {
             .consensus // FIXME: make sure we use id instead of idx everywhere
             .peer_tbs_pks
             .iter()
-            .find_map(|(&id, pk)| if pk == &ref_pub_key { Some(id) } else { None })
+            .find_map(|(&id, pk)| {
+                if Tiered::from_iter(pk.iter().map(|(k, v)| (k, v.0))) == ref_pub_key {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
             .expect("Own key not found among pub keys.");
 
         assert_eq!(
@@ -728,7 +723,7 @@ impl Mint {
             cfg.private
                 .tbs_sks
                 .iter()
-                .map(|(amount, sk)| (amount, sk.to_pub_key_share()))
+                .map(|(amount, sk)| (amount, SerdeEncodable(sk.to_pub_key_share())))
                 .collect()
         );
 
@@ -742,14 +737,25 @@ impl Mint {
         .map(|(amt, keys)| {
             // TODO: avoid this through better aggregation API allowing references or
             let keys = keys.into_iter().copied().collect::<Vec<_>>();
-            (amt, keys.aggregate(cfg.consensus.peer_tbs_pks.threshold()))
+            (
+                amt,
+                keys.into_iter()
+                    .map(|key| key.0)
+                    .collect::<Vec<_>>()
+                    .aggregate(cfg.consensus.peer_tbs_pks.threshold()),
+            )
         })
         .collect();
 
         Mint {
             cfg: cfg.clone(),
             sec_key: cfg.private.tbs_sks,
-            pub_key_shares: cfg.consensus.peer_tbs_pks,
+            pub_key_shares: cfg
+                .consensus
+                .peer_tbs_pks
+                .into_iter()
+                .map(|(peer, map)| (peer, map.iter().map(|(k, v)| (k, v.0)).collect()))
+                .collect(),
             pub_key: aggregate_pub_keys,
         }
     }
@@ -989,7 +995,7 @@ mod test {
             .get(Amount::from_sats(1))
             .unwrap();
 
-        (agg_pk, mints)
+        (agg_pk.0, mints)
     }
 
     #[test_log::test]

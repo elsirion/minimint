@@ -336,7 +336,7 @@ impl FedimintConsensus {
         let config = self.api.get_config_with_sig(&mut dbtx.get_isolated()).await;
 
         if config.client_hash_signature.is_none() {
-            let maybe_client_hash = config.client.consensus_hash(&self.module_inits.to_common());
+            let maybe_client_hash = config.client.consensus_hash();
             let client_hash = maybe_client_hash.expect("hashes");
             let peers: Vec<PeerId> = outcome.contributions.keys().cloned().collect();
             let mut contributing_peers = HashSet::new();
@@ -545,7 +545,7 @@ impl FedimintConsensus {
         // yet
         let client = self.api.get_config_with_sig(&mut dbtx.get_isolated()).await;
         if client.client_hash_signature.is_none() {
-            let maybe_client_hash = client.client.consensus_hash(&self.module_inits.to_common());
+            let maybe_client_hash = client.client.consensus_hash();
             let client_hash = maybe_client_hash.expect("Client config hashes");
             let sig = self.cfg.private.auth_sks.0.sign(client_hash);
             let item = ConsensusItem::ClientConfigSignatureShare(SerdeSignatureShare(sig));

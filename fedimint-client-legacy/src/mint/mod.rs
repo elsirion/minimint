@@ -558,7 +558,10 @@ impl MintClient {
             .cloned()
             .ok_or(MintClientError::OutputNotReadyYet(outpoint))?;
 
-        let notes = issuance.finalize(bsig, &self.config.tbs_pks)?;
+        let notes = issuance.finalize(
+            bsig,
+            &self.config.tbs_pks.iter().map(|(k, v)| (k, v.0)).collect(),
+        )?;
 
         for (amount, note) in notes.into_iter() {
             let key = NoteKey {

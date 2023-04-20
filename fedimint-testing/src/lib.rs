@@ -13,6 +13,7 @@ use fedimint_core::config::{ClientModuleConfig, ConfigGenModuleParams, ServerMod
 use fedimint_core::core::{ModuleInstanceId, LEGACY_HARDCODED_INSTANCE_ID_WALLET};
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::db::{Database, DatabaseTransaction, ModuleDatabaseTransaction};
+use fedimint_core::encoding::Decodable;
 use fedimint_core::module::interconnect::ModuleInterconect;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::module::{
@@ -62,8 +63,7 @@ where
             .map(|idx| PeerId::from(idx as u16))
             .collect::<Vec<_>>();
         let server_cfg = conf_gen.trusted_dealer_gen(&peers, params);
-        let consensus_cfg = server_cfg[&PeerId::from(0)].consensus.value().clone();
-        let cfg_response = conf_gen.to_config_response(consensus_cfg)?;
+        let client_cfg = server_cfg[&PeerId::from(0)].consensus.clone();
 
         let mut members = vec![];
         for (peer, cfg) in server_cfg {
@@ -80,7 +80,7 @@ where
 
         Ok(FakeFed {
             members,
-            client_cfg: cfg_response.client,
+            client_cfg,
             block_height: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -274,8 +274,11 @@ where
         &self.client_cfg
     }
 
-    pub fn client_cfg_typed<T: serde::de::DeserializeOwned>(&self) -> anyhow::Result<T> {
-        Ok(serde_json::from_value(self.client_cfg.value().clone())?)
+    pub fn client_cfg_typed<T: Decodable>(&self) -> anyhow::Result<T> {
+        Ok(T::consensus_decode(
+            &mut &self.client_cfg.config[..],
+            &Default::default(),
+        )?)
     }
 
     pub async fn fetch_from_all<'a: 'b, 'b, O, F, Fut>(&'a mut self, fetch: F) -> O

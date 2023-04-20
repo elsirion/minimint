@@ -1247,6 +1247,7 @@ dependencies = [
  "futures",
  "getrandom",
  "gloo-timers",
+ "hex",
  "itertools",
  "js-sys",
  "jsonrpsee-core",

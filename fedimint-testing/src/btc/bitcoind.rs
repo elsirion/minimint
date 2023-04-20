@@ -7,9 +7,7 @@ use async_trait::async_trait;
 use bitcoin::hashes::{sha256d, Hash};
 use bitcoin::{Block, BlockHash, BlockHeader, Network, Transaction};
 use fedimint_bitcoind::{DynBitcoindRpc, IBitcoindRpc, Result};
-use fedimint_core::config::{
-    ConfigGenModuleParams, DkgResult, ModuleConfigResponse, ServerModuleConfig,
-};
+use fedimint_core::config::{ConfigGenModuleParams, DkgResult, ServerModuleConfig};
 use fedimint_core::db::{Database, DatabaseVersion, ModuleDatabaseTransaction};
 use fedimint_core::module::{
     CoreConsensusVersion, ExtendsCommonModuleGen, ModuleConsensusVersion, PeerHandle,
@@ -20,7 +18,6 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::{apply, async_trait_maybe_send, Feerate, PeerId};
 use fedimint_wallet_client::WalletCommonGen;
 use fedimint_wallet_server::{Wallet, WalletGen};
-use serde_json::Value;
 
 #[derive(Debug, Clone)]
 /// Used to create a wallet module with a mock bitcoind
@@ -81,10 +78,6 @@ impl ServerModuleGen for FakeWalletGen {
         params: &ConfigGenModuleParams,
     ) -> DkgResult<ServerModuleConfig> {
         self.inner.distributed_gen(peer, params).await
-    }
-
-    fn to_config_response(&self, config: Value) -> Result<ModuleConfigResponse> {
-        self.inner.to_config_response(config)
     }
 
     fn validate_config(&self, identity: &PeerId, config: ServerModuleConfig) -> Result<()> {
