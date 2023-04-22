@@ -144,8 +144,7 @@ async fn test_incoming() {
             preimage.clone(),
             &fed.client_cfg_typed::<LightningClientConfig>()
                 .unwrap()
-                .threshold_pub_key
-                .0,
+                .threshold_pub_key,
         ),
         expiry_time: None,
     };
