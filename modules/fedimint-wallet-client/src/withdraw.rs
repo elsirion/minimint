@@ -37,6 +37,7 @@ impl State for WithdrawStateMachine {
                         global_context.clone(),
                         context.clone(),
                         created.clone(),
+                        self.operation_id,
                     ),
                     |_dbtx, res, old_state| Box::pin(transition_withdraw_processed(res, old_state)),
                 )]
@@ -59,7 +60,13 @@ async fn await_withdraw_processed(
     global_context: DynGlobalClientContext,
     context: WalletClientContext,
     created: CreatedWithdrawState,
+    operation_id: OperationId,
 ) -> Result<Txid, String> {
+    global_context
+        .await_tx_accepted(operation_id, created.fm_outpoint.txid)
+        .await
+        .map_err(|e| e.to_string())?;
+
     global_context
         .api()
         .await_output_outcome::<WalletOutputOutcome>(

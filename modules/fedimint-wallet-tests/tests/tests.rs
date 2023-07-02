@@ -5,7 +5,7 @@ use fedimint_core::util::NextOrPending;
 use fedimint_dummy_client::DummyClientGen;
 use fedimint_dummy_common::config::DummyGenParams;
 use fedimint_dummy_server::DummyGen;
-use fedimint_testing::fixtures::{FINALITY_DELAY, Fixtures, TIMEOUT};
+use fedimint_testing::fixtures::{Fixtures, FINALITY_DELAY, TIMEOUT};
 use fedimint_wallet_client::{DepositState, WalletClientExt, WalletClientGen, WithdrawState};
 use fedimint_wallet_common::config::WalletGenParams;
 use fedimint_wallet_server::WalletGen;
@@ -53,7 +53,7 @@ async fn on_chain_peg_in_and_peg_out() -> anyhow::Result<()> {
     assert_eq!(sub.ok().await?, WithdrawState::Created);
     let txid = match sub.ok().await? {
         WithdrawState::Succeeded(txid) => txid,
-        _ => panic!("Unexpected state"),
+        state => panic!("Unexpected state {state:?}"),
     };
     bitcoin.get_mempool_tx_fee(&txid).await;
 
