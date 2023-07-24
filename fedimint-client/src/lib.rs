@@ -76,10 +76,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use async_stream::stream;
-use db::{CachedApiVersionSet, CachedApiVersionSetKey};
+use db::{CachedApiVersionSet, CachedApiVersionSetKey, ClientConfigKey, ClientConfigKeyPrefix};
 use fedimint_core::api::{
     ApiVersionSet, DynGlobalApi, DynModuleApi, GlobalFederationApi, IGlobalFederationApi,
-    WsFederationApi,
+    InviteCode, WsFederationApi,
 };
 use fedimint_core::config::{ClientConfig, FederationId, ModuleGenRegistry};
 use fedimint_core::core::{DynInput, DynOutput, IInput, IOutput, ModuleInstanceId, ModuleKind};
@@ -90,7 +90,7 @@ use fedimint_core::module::{
     ApiVersion, MultiApiVersion, SupportedApiVersionsSummary, SupportedCoreApiVersions,
     SupportedModuleApiVersions,
 };
-use fedimint_core::task::{MaybeSend, MaybeSync, TaskGroup};
+use fedimint_core::task::{sleep, MaybeSend, MaybeSync, TaskGroup};
 use fedimint_core::time::now;
 use fedimint_core::transaction::Transaction;
 use fedimint_core::util::{BoxStream, NextOrPending};
@@ -102,7 +102,7 @@ pub use fedimint_derive_secret as derivable_secret;
 use fedimint_derive_secret::DerivableSecret;
 use futures::StreamExt;
 use module::DynClientModule;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 use secp256k1_zkp::{PublicKey, Secp256k1};
 use secret::DeriveableSecretClientExt;
 use serde::Serialize;
@@ -1162,8 +1162,15 @@ impl TransactionUpdates {
 pub struct ClientBuilder {
     module_gens: ClientModuleGenRegistry,
     primary_module_instance: Option<ModuleInstanceId>,
-    config: Option<ClientConfig>,
+    config_source: Option<ConfigSource>,
     db: Option<DatabaseSource>,
+}
+
+#[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
+pub enum ConfigSource {
+    Config(ClientConfig),
+    Invite(InviteCode),
 }
 
 pub enum DatabaseSource {
@@ -1182,16 +1189,36 @@ impl ClientBuilder {
         self.module_gens.attach(module_gen);
     }
 
-    /// Uses this config to initialize modules
+    /// Uses this invite code to connect to the federation
     ///
     /// ## Panics
-    /// If there was a config added previously
-    pub fn with_config(&mut self, config: ClientConfig) {
-        let was_replaced = self.config.replace(config).is_some();
+    /// If there was a config or invite code added previously
+    pub fn with_invite_code(&mut self, invite_code: InviteCode) {
+        let was_replaced = self
+            .config_source
+            .replace(ConfigSource::Invite(invite_code))
+            .is_some();
         assert!(
             !was_replaced,
-            "Only one config can be given to the builder."
-        )
+            "Only one configuration source can be given to the builder."
+        );
+    }
+
+    /// FIXME: <https://github.com/fedimint/fedimint/issues/2769>
+    ///
+    /// Uses this config to initialize the client
+    ///
+    /// ## Panics
+    /// If there is a invite code or config added previously
+    pub fn with_config(&mut self, config: ClientConfig) {
+        let was_replaced = self
+            .config_source
+            .replace(ConfigSource::Config(config))
+            .is_some();
+        assert!(
+            !was_replaced,
+            "Only one config source can be given to the builder."
+        );
     }
 
     /// Uses this module with the given instance id as the primary module. See
@@ -1301,39 +1328,47 @@ impl ClientBuilder {
     where
         S: RootSecretStrategy,
     {
-        let config = self.config.ok_or(anyhow!("No config was provided"))?;
+        let (config, decoders, db) = match self.db.ok_or(anyhow!("No database was provided"))? {
+            DatabaseSource::Fresh(db) => {
+                let db = Database::new_from_box(db, ModuleDecoderRegistry::default());
+                let config = get_config(&db, self.config_source.clone()).await?;
+
+                let mut decoders = client_decoders(
+                    &self.module_gens,
+                    config
+                        .modules
+                        .iter()
+                        .map(|(module_instance, module_config)| {
+                            (*module_instance, module_config.kind())
+                        }),
+                )?;
+                decoders.register_module(
+                    TRANSACTION_SUBMISSION_MODULE_INSTANCE,
+                    ModuleKind::from_static_str("tx_submission"),
+                    tx_submission_sm_decoder(),
+                );
+
+                // TODO: Should we reinitialize / update DB, providing the right client decoders
+                // let db = Database::new_from_box(db, decoders.clone());
+
+                (config, decoders, db)
+            }
+            DatabaseSource::Reuse(client) => {
+                let db = client.inner.db.clone();
+                let decoders = client.inner.decoders.clone();
+                let config = get_config(&db, self.config_source.clone()).await?;
+
+                (config, decoders, db)
+            }
+        };
+
+        let config = config.redecode_raw(&decoders)?;
+
         let primary_module_instance = self
             .primary_module_instance
             .ok_or(anyhow!("No primary module instance id was provided"))?;
 
-        let mut decoders = client_decoders(
-            &self.module_gens,
-            config
-                .modules
-                .iter()
-                .map(|(module_instance, module_config)| (*module_instance, module_config.kind())),
-        )?;
-        decoders.register_module(
-            TRANSACTION_SUBMISSION_MODULE_INSTANCE,
-            ModuleKind::from_static_str("tx_submission"),
-            tx_submission_sm_decoder(),
-        );
-
-        let config = config.redecode_raw(&decoders)?;
-
-        let db = match self.db.ok_or(anyhow!("No database was provided"))? {
-            DatabaseSource::Fresh(db) => Database::new_from_box(db, decoders.clone()),
-            DatabaseSource::Reuse(client) => {
-                assert_eq!(
-                    client.inner.config, config,
-                    "Can only reuse DB for clients started with the same config"
-                );
-                client.inner.db.clone()
-            }
-        };
-
         let notifier = Notifier::new(db.clone());
-
         let api = DynGlobalApi::from(WsFederationApi::from_config(&config));
 
         let common_api_versions = Client::load_and_refresh_common_api_version_static(
@@ -1418,6 +1453,75 @@ impl ClientBuilder {
         Ok(Client {
             inner: client_inner,
         })
+    }
+}
+
+// Sources config from database or from config source specified
+async fn get_config(
+    db: &Database,
+    config_source: Option<ConfigSource>,
+) -> anyhow::Result<ClientConfig> {
+    let mut dbtx = db.begin_transaction().await;
+    let config_res = match dbtx
+        .find_by_prefix(&ClientConfigKeyPrefix)
+        .await
+        .next()
+        .await
+    {
+        Some((_, config)) => Ok(config),
+        None => {
+            let config = match config_source
+                .clone()
+                .ok_or(anyhow!("No config source was provided"))?
+            {
+                ConfigSource::Config(config) => config.clone(),
+                ConfigSource::Invite(invite_code) => {
+                    try_download_config(invite_code.clone(), 100).await?
+                }
+            };
+
+            // Save config to DB
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.insert_new_entry(
+                &ClientConfigKey {
+                    id: config.federation_id,
+                },
+                &config,
+            )
+            .await;
+            dbtx.commit_tx_result().await?;
+
+            Ok(config)
+        }
+    };
+
+    config_res
+}
+
+/// Tries to download the client config from the federation,
+/// attempts up to `retries` number times with randomized wait intervals
+async fn try_download_config(
+    invite_code: InviteCode,
+    retries: usize,
+) -> anyhow::Result<ClientConfig> {
+    let api = Arc::new(WsFederationApi::from_invite_code(&[invite_code.clone()]))
+        as Arc<dyn IGlobalFederationApi + Send + Sync + 'static>;
+    let mut num_retries = 0;
+    loop {
+        if num_retries > retries {
+            break Err(anyhow!("Failed to download client config"));
+        }
+        match api.download_client_config(&invite_code).await {
+            Ok(cfg) => {
+                break Ok(cfg);
+            }
+            Err(_) => {
+                let random_delay: f64 = rand::thread_rng().gen();
+                tracing::warn!("Error downloading client config, trying again in {random_delay}");
+                sleep(Duration::from_secs_f64(random_delay)).await;
+            }
+        }
+        num_retries += 1;
     }
 }
 
