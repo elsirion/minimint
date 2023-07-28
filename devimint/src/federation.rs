@@ -62,6 +62,15 @@ impl Client {
         .run()
         .await?;
 
+        cmd!(
+            "cp",
+            "-R",
+            workdir.join("invite-code").display(),
+            client_dir.join("invite-code").display()
+        )
+        .run()
+        .await?;
+
         Ok(Self { path: client_dir })
     }
 

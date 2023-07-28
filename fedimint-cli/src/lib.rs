@@ -21,9 +21,9 @@ use fedimint_client::{ClientBuilder, ClientSecret};
 use fedimint_core::admin_client::WsAdminClient;
 use fedimint_core::api::{
     ClientConfigDownloadToken, FederationApiExt, FederationError, GlobalFederationApi,
-    IFederationApi, IGlobalFederationApi, InviteCode, WsFederationApi,
+    IFederationApi, InviteCode, WsFederationApi,
 };
-use fedimint_core::config::{load_from_file, ClientConfig, FederationId};
+use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::db::DatabaseValue;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::epoch::{SerdeEpochHistory, SignedEpochOutcome};
@@ -260,13 +260,25 @@ impl Opts {
             .ok_or_cli_msg(CliErrorKind::IOError, "`--data-dir=` argument not set.")
     }
 
-    fn admin_client(&self) -> CliResult<WsAdminClient> {
+    fn invite_code(&self) -> CliResult<InviteCode> {
+        let path = self.workdir()?.join("invite-code");
+        let string = fs::read_to_string(path).map_err_cli_msg(
+            CliErrorKind::GeneralFederationError,
+            "cannot read invite code",
+        )?;
+
+        InviteCode::from_str(&string).map_err_cli_msg(
+            CliErrorKind::GeneralFederationError,
+            "cannot parse invite code",
+        )
+    }
+
+    async fn admin_client(&self, cfg: &ClientConfig) -> CliResult<WsAdminClient> {
         let our_id = &self
             .our_id
             .ok_or_cli_msg(CliErrorKind::MissingAuth, "Admin client needs our-id set")?;
 
-        let url = self
-            .load_config()?
+        let url = cfg
             .api_endpoints
             .get(our_id)
             .expect("Endpoint exists")
@@ -281,11 +293,6 @@ impl Opts {
             .clone()
             .ok_or_cli_msg(CliErrorKind::MissingAuth, "CLI needs password set")?;
         Ok(ApiAuth(password))
-    }
-
-    fn load_config(&self) -> CliResult<ClientConfig> {
-        let cfg_path = self.workdir()?.join("client.json");
-        load_from_file(&cfg_path).map_err_cli_msg(CliErrorKind::IOError, "could not load config")
     }
 
     fn load_rocks_db(&self) -> CliResult<fedimint_rocksdb::RocksDb> {
@@ -318,9 +325,12 @@ impl Opts {
     async fn build_client_ng(
         &self,
         module_gens: &ClientModuleGenRegistry,
+        invite_code: &InviteCode,
     ) -> CliResult<fedimint_client::Client> {
         let tg = TaskGroup::new();
-        let client_builder = self.build_client_ng_builder(module_gens).await?;
+        let client_builder = self
+            .build_client_ng_builder(module_gens, invite_code)
+            .await?;
         client_builder
             .build::<PlainRootSecretStrategy>(tg)
             .await
@@ -330,14 +340,14 @@ impl Opts {
     async fn build_client_ng_builder(
         &self,
         module_gens: &ClientModuleGenRegistry,
+        invite_code: &InviteCode,
     ) -> CliResult<fedimint_client::ClientBuilder> {
-        let cfg = self.load_config()?;
         let db = self.load_rocks_db()?;
 
         let mut client_builder = ClientBuilder::default();
         client_builder.with_module_gens(module_gens.clone());
         client_builder.with_primary_module(1);
-        client_builder.with_config(cfg);
+        client_builder.with_invite_code(invite_code.clone());
         client_builder.with_database(db);
 
         Ok(client_builder)
@@ -465,6 +475,7 @@ struct PayRequest {
 
 pub struct FedimintCli {
     module_gens: ClientModuleGenRegistry,
+    invite_code: Option<InviteCode>,
 }
 
 impl FedimintCli {
@@ -485,6 +496,7 @@ impl FedimintCli {
 
         Ok(Self {
             module_gens: ClientModuleGenRegistry::new(),
+            invite_code: None,
         })
     }
 
@@ -502,8 +514,9 @@ impl FedimintCli {
             .with_module(WalletClientGen::default())
     }
 
-    pub async fn run(self) {
+    pub async fn run(&mut self) {
         let cli = Opts::parse();
+        self.invite_code = Some(cli.invite_code().unwrap());
 
         match self.handle_command(cli).await {
             Ok(output) => {
@@ -517,27 +530,21 @@ impl FedimintCli {
         }
     }
 
-    async fn handle_command(&self, cli: Opts) -> CliOutputResult {
+    fn get_invite_code(&self) -> CliResult<InviteCode> {
+        self.invite_code.clone().ok_or_cli_msg(
+            CliErrorKind::GeneralFailure,
+            "not connected to a federation",
+        )
+    }
+
+    async fn handle_command(&mut self, cli: Opts) -> CliOutputResult {
         match cli.command.clone() {
             Command::JoinFederation { invite_code } => {
                 let invite: InviteCode = InviteCode::from_str(&invite_code)
                     .map_err_cli_msg(CliErrorKind::InvalidValue, "invalid invite code")?;
-                let api = Arc::new(WsFederationApi::from_invite_code(&[invite.clone()]))
-                    as Arc<dyn IGlobalFederationApi + Send + Sync + 'static>;
-                let cfg: ClientConfig = api.download_client_config(&invite).await.map_err_cli_msg(
-                    CliErrorKind::NetworkError,
-                    "couldn't download config from peer",
-                )?;
-                std::fs::create_dir_all(cli.workdir()?)
-                    .map_err_cli_msg(CliErrorKind::IOError, "failed to create config directory")?;
-                let cfg_path = cli.workdir()?.join("client.json");
-                let writer = std::fs::File::options()
-                    .create_new(true)
-                    .write(true)
-                    .open(cfg_path)
-                    .map_err_cli_msg(CliErrorKind::IOError, "couldn't create config.json")?;
-                serde_json::to_writer_pretty(writer, &cfg)
-                    .map_err_cli_msg(CliErrorKind::IOError, "couldn't write config")?;
+
+                self.invite_code = Some(invite);
+
                 Ok(CliOutput::JoinFederation {
                     joined: invite_code,
                 })
@@ -548,7 +555,7 @@ impl FedimintCli {
             Command::Client(ClientCmd::Restore { secret }) => {
                 let tg = TaskGroup::new();
                 let (client, metadata) = cli
-                    .build_client_ng_builder(&self.module_gens)
+                    .build_client_ng_builder(&self.module_gens, &self.get_invite_code()?)
                     .await
                     .map_err_cli_msg(CliErrorKind::GeneralFailure, "failure")?
                     .build_restoring_from_backup(
@@ -568,11 +575,11 @@ impl FedimintCli {
                 Ok(CliOutput::Raw(serde_json::to_value(metadata).unwrap()))
             }
             Command::Client(command) => {
-                let config = cli.load_config()?;
                 let client = cli
-                    .build_client_ng(&self.module_gens)
+                    .build_client_ng(&self.module_gens, &self.get_invite_code()?)
                     .await
                     .map_err_cli_msg(CliErrorKind::GeneralFailure, "failure")?;
+                let config = client.get_config().clone();
                 Ok(CliOutput::Raw(
                     client::handle_ng_command(command, config, client)
                         .await
@@ -580,16 +587,26 @@ impl FedimintCli {
                 ))
             }
             Command::Admin(AdminCmd::Status) => {
-                let status = cli.admin_client()?.status().await?;
+                let user = cli
+                    .build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                    .await
+                    .map_err_cli_msg(CliErrorKind::GeneralFailure, "failure")?;
+
+                let status = cli.admin_client(user.get_config()).await?.status().await?;
                 Ok(CliOutput::Raw(
                     serde_json::to_value(status)
                         .map_err_cli_msg(CliErrorKind::GeneralFailure, "invalid response")?,
                 ))
             }
             Command::Admin(AdminCmd::LastEpoch) => {
-                let cfg = cli.load_config()?;
+                let user = cli
+                    .build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                    .await
+                    .map_err_cli_msg(CliErrorKind::GeneralFailure, "failure")?;
+                let cfg = user.get_config().clone();
+
                 let decoders = cli.load_decoders(&cfg, &self.module_gens);
-                let client = cli.admin_client()?;
+                let client = cli.admin_client(&cfg).await?;
                 let last_epoch = client
                     .fetch_last_epoch_history(cfg.epoch_pk, &decoders)
                     .await?;
@@ -598,21 +615,34 @@ impl FedimintCli {
                 Ok(CliOutput::LastEpoch { hex_outcome })
             }
             Command::Admin(AdminCmd::ForceEpoch { hex_outcome }) => {
-                let cfg = cli.load_config()?;
-                let decoders = cli.load_decoders(&cfg, &self.module_gens);
+                let user = cli
+                    .build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                    .await
+                    .map_err_cli_msg(CliErrorKind::GeneralFailure, "failure")?;
+                let cfg = user.get_config();
+
+                let decoders = cli.load_decoders(cfg, &self.module_gens);
                 let outcome: SignedEpochOutcome = Decodable::consensus_decode_hex(
                     &hex_outcome,
                     &decoders,
                 )
                 .map_err_cli_msg(CliErrorKind::SerializationError, "failed to decode outcome")?;
-                let client = cli.admin_client()?;
+                let client = cli.admin_client(cfg).await?;
                 client
                     .force_process_epoch(SerdeEpochHistory::from(&outcome), cli.auth()?)
                     .await?;
                 Ok(CliOutput::ForceEpoch)
             }
             Command::Admin(AdminCmd::SignalUpgrade) => {
-                cli.admin_client()?.signal_upgrade(cli.auth()?).await?;
+                let user = cli
+                    .build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                    .await
+                    .map_err_cli_msg(CliErrorKind::GeneralFailure, "failure")?;
+
+                cli.admin_client(user.get_config())
+                    .await?
+                    .signal_upgrade(cli.auth()?)
+                    .await?;
                 Ok(CliOutput::SignalUpgrade)
             }
             Command::Dev(DevCmd::Api {
@@ -624,7 +654,9 @@ impl FedimintCli {
                     .map_err_cli_msg(CliErrorKind::InvalidValue, "Invalid JSON-RPC parameters")?;
                 let params = ApiRequestErased::new(params);
                 let ws_api: Arc<_> = WsFederationApi::from_config(
-                    cli.build_client_ng(&self.module_gens).await?.get_config(),
+                    cli.build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                        .await?
+                        .get_config(),
                 )
                 .into();
                 let response: Value = match peer_id {
@@ -645,22 +677,14 @@ impl FedimintCli {
                 Ok(CliOutput::UntypedApiOutput { value: response })
             }
             Command::Dev(DevCmd::InviteCode) => {
-                let path = cli.workdir()?.join("invite-code");
-                let string = fs::read_to_string(path).map_err_cli_msg(
-                    CliErrorKind::GeneralFederationError,
-                    "cannot read invite code",
-                )?;
-
-                let invite_code = InviteCode::from_str(&string).map_err_cli_msg(
-                    CliErrorKind::GeneralFederationError,
-                    "cannot parse invite code",
-                )?;
-
+                let invite_code = self.get_invite_code()?;
                 Ok(CliOutput::InviteCode { invite_code })
             }
             Command::Dev(DevCmd::WaitBlockHeight { height: target }) => {
                 task::timeout(Duration::from_secs(30), async move {
-                    let client = cli.build_client_ng(&self.module_gens).await?;
+                    let client = cli
+                        .build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                        .await?;
                     loop {
                         let (_, instance) = client
                             .get_first_module::<WalletClientModule>(&fedimint_wallet_client::KIND);
@@ -701,7 +725,7 @@ impl FedimintCli {
             }),
             Command::Dev(DevCmd::EpochCount) => {
                 let count = cli
-                    .build_client_ng(&self.module_gens)
+                    .build_client_ng(&self.module_gens, &self.get_invite_code()?)
                     .await?
                     .api()
                     .fetch_epoch_count()
@@ -755,7 +779,9 @@ impl FedimintCli {
 
                 let tx = fedimint_core::transaction::Transaction::from_bytes(
                     &bytes,
-                    cli.build_client_ng(&self.module_gens).await?.decoders(),
+                    cli.build_client_ng(&self.module_gens, &self.get_invite_code()?)
+                        .await?
+                        .decoders(),
                 )
                 .map_err_cli_msg(
                     CliErrorKind::SerializationError,
