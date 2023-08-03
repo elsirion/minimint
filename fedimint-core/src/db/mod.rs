@@ -91,6 +91,7 @@ pub trait IDatabase: Debug + MaybeSend + MaybeSync + 'static {
 #[derive(Clone, Debug)]
 pub struct Database {
     inner_db: Arc<DatabaseInner<dyn IDatabase>>,
+    module_decoders: ModuleDecoderRegistry,
     module_instance_id: Option<ModuleInstanceId>,
 }
 
@@ -99,7 +100,6 @@ pub struct Database {
 #[derive(Debug)]
 struct DatabaseInner<Db: IDatabase + ?Sized> {
     notifications: Notifications,
-    module_decoders: ModuleDecoderRegistry,
     db: Box<Db>,
 }
 
@@ -134,12 +134,12 @@ impl Database {
         let inner = DatabaseInner::<dyn IDatabase> {
             db: Box::new(db),
             notifications: Notifications::new(),
-            module_decoders,
         };
 
         Self {
             inner_db: Arc::new(inner),
             module_instance_id: None,
+            module_decoders,
         }
     }
 
@@ -151,12 +151,12 @@ impl Database {
         let inner = DatabaseInner {
             db,
             notifications: Notifications::new(),
-            module_decoders,
         };
 
         Self {
             inner_db: Arc::new(inner),
             module_instance_id: None,
+            module_decoders,
         }
     }
 
@@ -168,14 +168,25 @@ impl Database {
         let db = self.inner_db.clone();
         Self {
             inner_db: db,
+            module_decoders: self.module_decoders.clone(),
             module_instance_id: Some(module_instance_id),
+        }
+    }
+
+    pub fn new_with_decoders(&self, module_decoders: ModuleDecoderRegistry) -> Self {
+        let inner_db = self.inner_db.clone();
+        let module_instance_id = self.module_instance_id;
+        Self {
+            inner_db,
+            module_decoders,
+            module_instance_id,
         }
     }
 
     pub async fn begin_transaction(&self) -> DatabaseTransaction {
         let dbtx = DatabaseTransaction::new(
             self.inner_db.db.begin_transaction().await,
-            self.inner_db.module_decoders.clone(),
+            self.module_decoders.clone(),
             &self.inner_db.notifications,
         );
 
@@ -308,7 +319,7 @@ impl Database {
                         std::any::type_name::<K::Value>(),
                         value_bytes
                     );
-                    K::Value::from_bytes(&value_bytes, &self.inner_db.module_decoders)
+                    K::Value::from_bytes(&value_bytes, &self.module_decoders)
                         .expect("Unrecoverable error when decoding the database value")
                 });
 
@@ -317,7 +328,7 @@ impl Database {
                     value,
                     DatabaseTransaction::new(
                         tx,
-                        self.inner_db.module_decoders.clone(),
+                        self.module_decoders.clone(),
                         &self.inner_db.notifications,
                     ),
                 );
