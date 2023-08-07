@@ -502,6 +502,7 @@
           lib = {
             inherit replaceGitHash devShells;
             commonArgsBase = craneLibNative.commonArgsBase;
+            toolchain = toolchain;
           };
 
           checks = {
