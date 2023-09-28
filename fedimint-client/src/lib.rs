@@ -543,6 +543,19 @@ impl Client {
             .await;
     }
 
+    /// *FOR INTERNAL USE ONLY!!!*
+    ///
+    /// Removes all inactive state machines belonging to the given operation,
+    /// might have unintended side effects if done without a good understanding
+    /// of the state machine abstraction (e.g. no duplicate operation filtering
+    /// anymore).
+    pub async fn delete_operation_history(&self, operation_id: OperationId) {
+        self.inner
+            .executor
+            .delete_operation_history(operation_id)
+            .await
+    }
+
     pub fn api(&self) -> &(dyn IGlobalFederationApi + 'static) {
         self.inner.api.as_ref()
     }

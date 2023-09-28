@@ -174,6 +174,27 @@ where
         Ok(())
     }
 
+    /// Just don't
+    pub(crate) async fn delete_operation_history(&self, operation_id: OperationId) {
+        self.inner
+            .db
+            .autocommit(
+                |dbtx| {
+                    Box::pin(async move {
+                        dbtx.remove_by_prefix(&InactiveOperationStateKeyPrefix::<GC> {
+                            operation_id,
+                            _pd: Default::default(),
+                        })
+                        .await;
+                        anyhow::Result::<()>::Ok(())
+                    })
+                },
+                None,
+            )
+            .await
+            .expect("Can't fail")
+    }
+
     /// **Mostly used for testing**
     ///
     /// Check if state exists in the database as part of an actively running

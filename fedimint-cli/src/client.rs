@@ -87,6 +87,8 @@ pub enum ClientCmd {
     },
     /// Generate a new deposit address, funds sent to it can later be claimed
     DepositAddress,
+    /// Restarts scanning for a timed out deposit operation
+    ReviveDepositOperation { operation_id: OperationId },
     /// Wait for deposit on previously generated address
     AwaitDeposit { operation_id: OperationId },
     /// Withdraw funds from the federation
@@ -467,6 +469,12 @@ pub async fn handle_command(
         ClientCmd::Config => {
             let config = client.get_config_json();
             Ok(serde_json::to_value(config).expect("Client config is serializable"))
+        }
+        ClientCmd::ReviveDepositOperation { operation_id } => {
+            client
+                .revive_deposit(operation_id, now() + Duration::from_secs(60 * 60 * 24 * 7))
+                .await?;
+            Ok(json!({}))
         }
     }
 }

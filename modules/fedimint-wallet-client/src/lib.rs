@@ -38,7 +38,7 @@ pub use fedimint_wallet_common::*;
 use futures::{Stream, StreamExt};
 use miniscript::ToPublicKey;
 use rand::{thread_rng, Rng};
-use secp256k1::{All, Secp256k1};
+use secp256k1::{All, KeyPair, Secp256k1};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
@@ -55,6 +55,12 @@ pub trait WalletClientExt {
         &self,
         valid_until: SystemTime,
     ) -> anyhow::Result<(OperationId, Address)>;
+
+    async fn revive_deposit(
+        &self,
+        operation_id: OperationId,
+        valid_until: SystemTime,
+    ) -> anyhow::Result<()>;
 
     async fn subscribe_deposit_updates(
         &self,
@@ -130,7 +136,7 @@ impl WalletClientExt for Client {
             .autocommit(
                 |dbtx| {
                     Box::pin(async move {
-                        let (operation_id, sm, address) = wallet_client
+                        let (operation_id, sm, address, tweak_key) = wallet_client
                             .get_deposit_address(
                                 valid_until,
                                 &mut dbtx.with_module_prefix(instance.id),
@@ -153,6 +159,7 @@ impl WalletClientExt for Client {
                                 WalletOperationMeta::Deposit {
                                     address: address.clone(),
                                     expires_at: valid_until,
+                                    tweak_key,
                                 },
                             )
                             .await;
@@ -172,6 +179,78 @@ impl WalletClientExt for Client {
             })?;
 
         Ok((operation_id, address))
+    }
+
+    // TODO: check if the SM has stopped before trying to restart
+    /// Restarts a timed out deposit state machine. *ONLY USE IF IT'S TIMED
+    /// OUT ALREADY!*
+    async fn revive_deposit(
+        &self,
+        operation_id: OperationId,
+        valid_until: SystemTime,
+    ) -> anyhow::Result<()> {
+        let (_wallet_client, module_instance) =
+            self.get_first_module::<WalletClientModule>(&WalletCommonGen::KIND);
+
+        let operation_log_entry = self
+            .operation_log()
+            .get_operation(operation_id)
+            .await
+            .with_context(|| anyhow!("Operation not found: {operation_id}"))?;
+
+        self.operation_log()
+            .delete_cached_outcome(operation_id)
+            .await;
+
+        if operation_log_entry.operation_module_kind() != WalletCommonGen::KIND.as_str() {
+            bail!("Operation is not a wallet operation");
+        }
+
+        let tweak_key = match operation_log_entry.meta::<WalletOperationMeta>() {
+            WalletOperationMeta::Deposit { tweak_key, .. } => tweak_key,
+            _ => bail!("Wallet operation isn't a deposit"),
+        };
+
+        self.db()
+            .autocommit(
+                |dbtx| {
+                    Box::pin(async move {
+                        let deposit_sm = WalletClientStates::Deposit(DepositStateMachine {
+                            operation_id,
+                            state: DepositStates::Created(CreatedDepositState {
+                                tweak_key,
+                                timeout_at: valid_until,
+                            }),
+                        });
+
+                        ensure!(
+                            !self.get_active_operations().await.contains(&operation_id),
+                            "Deposit operation still running!"
+                        );
+
+                        self.delete_operation_history(operation_id).await;
+                        self.add_state_machines(
+                            dbtx,
+                            vec![DynState::from_typed(module_instance.id, deposit_sm)],
+                        )
+                        .await
+                        .context("Could not re-add deposit state machine, was it still running?")?;
+
+                        Ok(())
+                    })
+                },
+                Some(100),
+            )
+            .await
+            .map_err(|e| match e {
+                AutocommitError::CommitFailed {
+                    last_error,
+                    attempts,
+                } => last_error.context(format!("Failed to commit after {attempts} attempts")),
+                AutocommitError::ClosureError { error, .. } => error,
+            })?;
+
+        Ok(())
     }
 
     async fn subscribe_deposit_updates(
@@ -485,6 +564,7 @@ pub enum WalletOperationMeta {
     Deposit {
         address: bitcoin::Address,
         expires_at: SystemTime,
+        tweak_key: KeyPair,
     },
     Withdraw {
         address: bitcoin::Address,
@@ -579,7 +659,7 @@ impl WalletClientModule {
         &self,
         valid_until: SystemTime,
         dbtx: &mut ModuleDatabaseTransaction<'_>,
-    ) -> (OperationId, WalletClientStates, Address) {
+    ) -> (OperationId, WalletClientStates, Address, KeyPair) {
         let tweak_key = self
             .module_root_secret
             .child_key(WALLET_TWEAK_CHILD_ID)
@@ -604,7 +684,7 @@ impl WalletClientModule {
             }),
         });
 
-        (operation_id, deposit_sm, address)
+        (operation_id, deposit_sm, address, tweak_key)
     }
 
     pub async fn get_withdraw_fees(

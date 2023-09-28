@@ -136,6 +136,27 @@ impl OperationLog {
         Ok(())
     }
 
+    pub async fn delete_cached_outcome(&self, operation_id: OperationId) {
+        self.db
+            .autocommit(
+                |dbtx| {
+                    Box::pin(async move {
+                        let mut operation = Self::get_operation_inner(dbtx, operation_id)
+                            .await
+                            .expect("Operation exists");
+                        operation.outcome = None;
+                        dbtx.insert_entry(&OperationLogKey { operation_id }, &operation)
+                            .await;
+
+                        Result::<(), anyhow::Error>::Ok(())
+                    })
+                },
+                None,
+            )
+            .await
+            .expect("Can't fails")
+    }
+
     /// Tries to set the outcome of an operation, but only logs an error if it
     /// fails and does not return it. Since the outcome can always be recomputed
     /// from an update stream, failing to save it isn't a problem in cases where
