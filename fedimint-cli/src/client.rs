@@ -319,7 +319,7 @@ pub async fn handle_ng_command(
         }
         ClientCmd::DepositAddress => {
             let (operation_id, address) = client
-                .get_deposit_address(now() + Duration::from_secs(600))
+                .get_deposit_address(now() + Duration::from_secs(6000000))
                 .await?;
             Ok(serde_json::json! {
                 {

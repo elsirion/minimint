@@ -338,7 +338,11 @@ impl ServerModule for Wallet {
 
         let fee_rate_proposal = self.fee_rate().await;
 
-        if fee_rate_proposal != self.consensus_fee_rate(dbtx).await {
+        if fee_rate_proposal
+            .sats_per_kvb
+            .abs_diff(self.consensus_fee_rate(dbtx).await.sats_per_kvb)
+            > 3000
+        {
             items.push(WalletConsensusItem::Feerate(fee_rate_proposal));
         }
 

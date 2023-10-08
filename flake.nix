@@ -34,6 +34,7 @@
 
           pkgs = import nixpkgs {
             inherit system;
+            config.allowUnfree = true;
             overlays = [
               (final: prev: {
                 cargo-udeps = pkgs-unstable.cargo-udeps;
@@ -455,7 +456,7 @@
               # the settings and tools necessary to build and work with the codebase.
               default = pkgs.mkShell (shellCommonNative
                 // {
-                nativeBuildInputs = shellCommonNative.nativeBuildInputs ++ [ toolchain.fenixToolchain ];
+                nativeBuildInputs = shellCommonNative.nativeBuildInputs ++ [ toolchain.fenixToolchain pkgs.jetbrains.clion ];
               });
 
               nightly = pkgs.mkShell (shellCommonNative

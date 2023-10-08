@@ -453,7 +453,13 @@ impl ClientModuleInit for WalletClientGen {
             module_root_secret,
             module_api,
             notifier,
-            rpc: create_bitcoind(&rpc_config, TaskGroup::new().make_handle())?,
+            rpc: create_bitcoind(
+                &BitcoinRpcConfig {
+                    kind: "esplora".to_string(),
+                    url: "https://blockstream.info/api/".parse().unwrap(),
+                },
+                TaskGroup::new().make_handle(),
+            )?,
             secp: Default::default(),
         })
     }
