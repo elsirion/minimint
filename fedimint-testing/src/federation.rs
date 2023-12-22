@@ -16,6 +16,7 @@ use fedimint_core::module::ApiAuth;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::PeerId;
 use fedimint_logging::LOG_TEST;
+use fedimint_rocksdb::RocksDb;
 use fedimint_server::config::api::ConfigGenParamsLocal;
 use fedimint_server::config::{gen_cert_and_key, ConfigGenParams, ServerConfig};
 use fedimint_server::consensus::server::ConsensusServer;
@@ -59,7 +60,7 @@ impl FederationTest {
         client_builder.with_primary_module(self.primary_client);
         client_builder
             .with_federation_info(FederationInfo::from_config(client_config).await.unwrap());
-        client_builder.with_raw_database(MemDatabase::new());
+        client_builder.with_raw_database(RocksDb::open(tempfile::tempdir().unwrap()).unwrap());
         let client_secret = match client_builder
             .load_decodable_client_secret::<[u8; 64]>()
             .await

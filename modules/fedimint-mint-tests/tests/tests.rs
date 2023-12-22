@@ -14,6 +14,7 @@ use fedimint_mint_client::{
 use fedimint_mint_common::config::MintGenParams;
 use fedimint_mint_server::MintInit;
 use fedimint_testing::fixtures::{Fixtures, TIMEOUT};
+use futures::StreamExt;
 use tracing::info;
 
 fn fixtures() -> Fixtures {
@@ -47,6 +48,79 @@ async fn sends_ecash_out_of_band() -> anyhow::Result<()> {
 
     assert_eq!(client1.get_balance().await, sats(250));
     assert_eq!(client2.get_balance().await, sats(750));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_ecash_oob_highly_parallel() -> anyhow::Result<()> {
+    // Print notes for client1
+    let fed = fixtures().new_fed().await;
+    let (client1, client2) = fed.two_clients().await;
+    let client1_dummy_module = client1.get_first_module::<DummyClientModule>();
+    let (op, outpoint) = client1_dummy_module.print_money(sats(1000)).await?;
+    client1.await_primary_module_output(op, outpoint).await?;
+
+    const NUM_PAR_REISSUE: usize = 10;
+
+    // Spend from client1 to client2 25 times in parallel
+    let mut spend_tasks = vec![];
+    for num_spend in 0..NUM_PAR_REISSUE {
+        let task_client1 = client1.clone();
+        spend_tasks.push(tokio::spawn(async move {
+            info!("Starting spend {num_spend}");
+            let client1_mint = task_client1.get_first_module::<MintClientModule>();
+            let (op, notes) = client1_mint
+                .spend_notes(sats(30), TIMEOUT, ())
+                .await
+                .unwrap();
+            let sub1 = &mut client1_mint
+                .subscribe_spend_notes(op)
+                .await
+                .unwrap()
+                .into_stream();
+            assert_eq!(sub1.ok().await.unwrap(), SpendOOBState::Created);
+            notes
+        }));
+    }
+
+    let note_bags = futures::stream::iter(spend_tasks)
+        .then(|handle| async move { handle.await.unwrap() })
+        .collect::<Vec<_>>()
+        .await;
+    let total_amount = note_bags
+        .iter()
+        .map(|notes| notes.total_amount())
+        .sum::<Amount>();
+
+    dbg!(note_bags.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+
+    let mut reissue_tasks = vec![];
+    for (num_reissue, notes) in note_bags.into_iter().enumerate() {
+        let task_client2 = client2.clone();
+        reissue_tasks.push(tokio::spawn(async move {
+            info!("Starting reissue {num_reissue}");
+            let client2_mint = task_client2.get_first_module::<MintClientModule>();
+            let op = client2_mint
+                .reissue_external_notes(notes, ())
+                .await
+                .unwrap();
+            let sub2 = client2_mint
+                .subscribe_reissue_external_notes(op)
+                .await
+                .unwrap();
+            let mut sub2 = sub2.into_stream();
+            assert_eq!(sub2.ok().await.unwrap(), ReissueExternalNotesState::Created);
+            assert_eq!(sub2.ok().await.unwrap(), ReissueExternalNotesState::Issuing);
+            assert_eq!(sub2.ok().await.unwrap(), ReissueExternalNotesState::Done);
+        }));
+    }
+
+    for task in reissue_tasks {
+        task.await.unwrap();
+    }
+
+    assert_eq!(client1.get_balance().await, sats(1000) - total_amount);
+    assert_eq!(client2.get_balance().await, total_amount);
     Ok(())
 }
 
