@@ -3,6 +3,10 @@ pub mod incoming;
 pub mod pay;
 pub mod receive;
 
+/// State machine for creating offers on behalf of third parties
+pub mod receive_ext;
+pub mod receive_ext_finalize;
+
 use std::collections::BTreeMap;
 use std::iter::once;
 use std::str::FromStr;
@@ -34,6 +38,7 @@ use fedimint_core::module::{
     ApiVersion, CommonModuleInit, ModuleCommon, ModuleInit, MultiApiVersion, TransactionItemAmount,
 };
 use fedimint_core::task::{timeout, MaybeSend, MaybeSync};
+use fedimint_core::time::now;
 use fedimint_core::{
     apply, async_trait_maybe_send, push_db_pair_items, Amount, OutPoint, TransactionId,
 };
@@ -81,6 +86,7 @@ use crate::receive::{
     LightningReceiveError, LightningReceiveStateMachine, LightningReceiveStates,
     LightningReceiveSubmittedOffer,
 };
+use crate::receive_ext::{LightningReceiveExternalStateMachine, LightningReceiveStatesExternal};
 
 /// Number of blocks until outgoing lightning contracts times out and user
 /// client can get refund
@@ -227,6 +233,14 @@ pub enum LightningOperationMetaVariant {
     Receive {
         out_point: OutPoint,
         invoice: Bolt11Invoice,
+    },
+    ReceiveExt {
+        out_point: OutPoint,
+        invoice: Bolt11Invoice,
+    },
+    ReceiveExtClaim {
+        // TODO: track expiry
+        amount: Amount,
     },
 }
 
@@ -708,7 +722,7 @@ impl LightningClientModule {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn create_lightning_receive_output<'a>(
+    async fn create_lightning_receive_output_internal<'a>(
         &'a self,
         amount: Amount,
         description: String,
@@ -725,7 +739,122 @@ impl LightningClientModule {
         [u8; 32],
     )> {
         let payment_keypair = KeyPair::new(&self.secp, &mut rng);
-        let preimage_key: [u8; 33] = payment_keypair.public_key().serialize();
+
+        let (output, invoice, preimage) = self
+            .create_lightning_receive_output_inner(
+                payment_keypair.public_key(),
+                amount,
+                description,
+                rng,
+                expiry_time,
+                src_node_id,
+                short_channel_id,
+                route_hints,
+                network,
+            )
+            .await?;
+
+        let operation_id = OperationId(invoice.payment_hash().into_inner());
+
+        let sm_invoice = invoice.clone();
+        let sm_gen = Arc::new(move |txid: TransactionId, _input_idx: u64| {
+            vec![LightningClientStateMachines::Receive(
+                LightningReceiveStateMachine {
+                    operation_id,
+                    state: LightningReceiveStates::SubmittedOffer(LightningReceiveSubmittedOffer {
+                        offer_txid: txid,
+                        invoice: sm_invoice.clone(),
+                        payment_keypair,
+                    }),
+                },
+            )]
+        });
+
+        Ok((
+            operation_id,
+            invoice,
+            ClientOutput {
+                output,
+                state_machines: sm_gen,
+            },
+            preimage,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_lightning_receive_output_external<'a>(
+        &'a self,
+        recipient_key: PublicKey,
+        amount: Amount,
+        description: String,
+        rng: impl RngCore + CryptoRng + 'a,
+        expiry_time: Option<u64>,
+        src_node_id: secp256k1::PublicKey,
+        short_channel_id: u64,
+        route_hints: Vec<fedimint_ln_common::route_hints::RouteHint>,
+        network: Network,
+    ) -> anyhow::Result<(
+        OperationId,
+        Bolt11Invoice,
+        ClientOutput<LightningOutput, LightningClientStateMachines>,
+        [u8; 32],
+    )> {
+        let (output, invoice, preimage) = self
+            .create_lightning_receive_output_inner(
+                recipient_key,
+                amount,
+                description,
+                rng,
+                expiry_time,
+                src_node_id,
+                short_channel_id,
+                route_hints,
+                network,
+            )
+            .await?;
+
+        let operation_id = OperationId(invoice.payment_hash().into_inner());
+
+        let sm_invoice = invoice.clone();
+        let sm_gen = Arc::new(move |txid: TransactionId, _input_idx: u64| {
+            vec![LightningClientStateMachines::ReceiveExt(
+                LightningReceiveExternalStateMachine {
+                    operation_id,
+                    state: LightningReceiveStatesExternal::SubmittedOffer(
+                        receive_ext::LightningReceiveSubmittedOffer {
+                            offer_txid: txid,
+                            invoice: sm_invoice.clone(),
+                        },
+                    ),
+                },
+            )]
+        });
+
+        Ok((
+            operation_id,
+            invoice,
+            ClientOutput {
+                output,
+                state_machines: sm_gen,
+            },
+            preimage,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_lightning_receive_output_inner<'a>(
+        &'a self,
+        pub_payment_key: PublicKey,
+        amount: Amount,
+        description: String,
+        mut rng: impl RngCore + CryptoRng + 'a,
+        expiry_time: Option<u64>,
+        src_node_id: secp256k1::PublicKey,
+        short_channel_id: u64,
+        route_hints: Vec<fedimint_ln_common::route_hints::RouteHint>,
+        network: Network,
+    ) -> anyhow::Result<(LightningOutput, Bolt11Invoice, [u8; 32])> {
+        let preimage_key: [u8; 33] = pub_payment_key.serialize();
         let preimage = sha256::Hash::hash(&preimage_key);
         let payment_hash = sha256::Hash::hash(&preimage);
 
@@ -783,22 +912,6 @@ impl LightningClientModule {
         let invoice = invoice_builder
             .build_signed(|hash| self.secp.sign_ecdsa_recoverable(hash, &node_secret_key))?;
 
-        let operation_id = OperationId(invoice.payment_hash().into_inner());
-
-        let sm_invoice = invoice.clone();
-        let sm_gen = Arc::new(move |txid: TransactionId, _input_idx: u64| {
-            vec![LightningClientStateMachines::Receive(
-                LightningReceiveStateMachine {
-                    operation_id,
-                    state: LightningReceiveStates::SubmittedOffer(LightningReceiveSubmittedOffer {
-                        offer_txid: txid,
-                        invoice: sm_invoice.clone(),
-                        payment_keypair,
-                    }),
-                },
-            )]
-        });
-
         let ln_output = LightningOutput::new_v0_offer(IncomingContractOffer {
             amount,
             hash: payment_hash,
@@ -809,15 +922,7 @@ impl LightningClientModule {
             expiry_time,
         });
 
-        Ok((
-            operation_id,
-            invoice,
-            ClientOutput {
-                output: ln_output,
-                state_machines: sm_gen,
-            },
-            preimage.into_32(),
-        ))
+        Ok((ln_output, invoice, preimage.into_32()))
     }
 
     pub async fn select_active_gateway_opt(&self) -> Option<LightningGateway> {
@@ -1300,7 +1405,7 @@ impl LightningClientModule {
         };
 
         let (operation_id, invoice, output, preimage) = self
-            .create_lightning_receive_output(
+            .create_lightning_receive_output_internal(
                 amount,
                 description,
                 rand::rngs::OsRng,
@@ -1340,6 +1445,123 @@ impl LightningClientModule {
             .map_err(|e| anyhow::anyhow!("Offer transaction was not accepted: {e:?}"))?;
 
         Ok((operation_id, invoice, preimage))
+    }
+
+    pub async fn create_bolt11_invoice_ext<M: Serialize + Send + Sync>(
+        &self,
+        // TODO: define key exchange with user, maybe xpub?
+        recipient_key: PublicKey,
+        amount: Amount,
+        description: String,
+        expiry_time: Option<u64>,
+        extra_meta: M,
+    ) -> anyhow::Result<(OperationId, Bolt11Invoice, [u8; 32])> {
+        let (src_node_id, short_channel_id, route_hints) = match self.select_active_gateway().await
+        {
+            Ok(active_gateway) => (
+                active_gateway.node_pub_key,
+                active_gateway.mint_channel_id,
+                active_gateway.route_hints,
+            ),
+            Err(_) => {
+                let markers = self.client_ctx.get_internal_payment_markers()?;
+                (markers.0, markers.1, vec![])
+            }
+        };
+
+        let (operation_id, invoice, output, preimage) = self
+            .create_lightning_receive_output_external(
+                recipient_key,
+                amount,
+                description,
+                rand::rngs::OsRng,
+                expiry_time,
+                src_node_id,
+                short_channel_id,
+                route_hints,
+                self.cfg.network,
+            )
+            .await?;
+        let tx = TransactionBuilder::new().with_output(self.client_ctx.make_client_output(output));
+        let extra_meta = serde_json::to_value(extra_meta).expect("extra_meta is serializable");
+        let operation_meta_gen = |txid, _| LightningOperationMeta {
+            variant: LightningOperationMetaVariant::ReceiveExt {
+                out_point: OutPoint { txid, out_idx: 0 },
+                invoice: invoice.clone(),
+            },
+            extra_meta: extra_meta.clone(),
+        };
+        let (txid, _) = self
+            .client_ctx
+            .finalize_and_submit_transaction(
+                operation_id,
+                LightningCommonInit::KIND.as_str(),
+                operation_meta_gen,
+                tx,
+            )
+            .await?;
+
+        // TODO: do we really still want this? Couldn't the update stream just return
+        // the invoice at the appropriate time so it's not available before its
+        // confirmed? Wait for the transaction to be accepted by the federation,
+        // otherwise the invoice will not be able to be paid
+        self.client_ctx
+            .transaction_updates(operation_id)
+            .await
+            .await_tx_accepted(txid)
+            .await
+            .map_err(|e| anyhow::anyhow!("Offer transaction was not accepted: {e:?}"))?;
+
+        Ok((operation_id, invoice, preimage))
+    }
+
+    // TODO: update stream for external receive
+
+    pub async fn claim_external_bolt11_invoice<M: Serialize + Send + Sync>(
+        &self,
+        recipient_key: KeyPair,
+        extra_meta: M,
+    ) -> anyhow::Result<(OperationId, Amount)> {
+        let preimage_key: [u8; 33] = recipient_key.public_key().serialize();
+        let preimage = sha256::Hash::hash(&preimage_key);
+        let payment_hash = sha256::Hash::hash(&preimage);
+
+        // TODO: get amount another way
+        // let offer = self.module_api.fetch_offer(payment_hash).await.unwrap();
+        let operation_id = OperationId(payment_hash.into_inner());
+
+        let extra_meta = serde_json::to_value(extra_meta).expect("extra_meta is serializable");
+
+        let sm = LightningClientStateMachines::ReceiveExtClaim(
+            receive_ext_finalize::LightningReceiveStateMachine {
+                operation_id,
+                state: receive_ext_finalize::LightningReceiveStates::ConfirmedInvoice(
+                    receive_ext_finalize::LightningReceiveConfirmedInvoice {
+                        payment_hash,
+                        expiry: now() + Duration::from_secs(60 * 60 * 24 * 7), /* FIXME: get from
+                                                                                * offer */
+                        keypair: recipient_key,
+                    },
+                ),
+            },
+        );
+
+        self.client_ctx
+            .manual_operation_start(
+                operation_id,
+                LightningCommonInit::KIND.as_str(),
+                LightningOperationMeta {
+                    variant: LightningOperationMetaVariant::ReceiveExtClaim {
+                        amount: Amount::ZERO, // FIXME
+                    },
+                    extra_meta: extra_meta.clone(),
+                },
+                vec![self.client_ctx.make_dyn_state(sm)],
+            )
+            .await;
+
+        // FIXME
+        Ok((operation_id, Amount::ZERO))
     }
 
     pub async fn subscribe_ln_receive(
@@ -1403,6 +1625,8 @@ pub enum LightningClientStateMachines {
     InternalPay(IncomingStateMachine),
     LightningPay(LightningPayStateMachine),
     Receive(LightningReceiveStateMachine),
+    ReceiveExt(LightningReceiveExternalStateMachine),
+    ReceiveExtClaim(receive_ext_finalize::LightningReceiveStateMachine),
 }
 
 impl IntoDynInstance for LightningClientStateMachines {
@@ -1441,6 +1665,18 @@ impl State for LightningClientStateMachines {
                     LightningClientStateMachines::Receive
                 )
             }
+            LightningClientStateMachines::ReceiveExt(receive_ext_state) => {
+                sm_enum_variant_translation!(
+                    receive_ext_state.transitions(context, global_context),
+                    LightningClientStateMachines::ReceiveExt
+                )
+            }
+            LightningClientStateMachines::ReceiveExtClaim(receive_ext_state) => {
+                sm_enum_variant_translation!(
+                    receive_ext_state.transitions(context, global_context),
+                    LightningClientStateMachines::ReceiveExtClaim
+                )
+            }
         }
     }
 
@@ -1453,6 +1689,12 @@ impl State for LightningClientStateMachines {
                 lightning_pay_state.operation_id()
             }
             LightningClientStateMachines::Receive(receive_state) => receive_state.operation_id(),
+            LightningClientStateMachines::ReceiveExt(receive_ext_state) => {
+                receive_ext_state.operation_id()
+            }
+            LightningClientStateMachines::ReceiveExtClaim(receive_ext_state) => {
+                receive_ext_state.operation_id()
+            }
         }
     }
 }

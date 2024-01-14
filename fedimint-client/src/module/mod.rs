@@ -378,6 +378,30 @@ where
     pub fn get_internal_payment_markers(&self) -> anyhow::Result<(PublicKey, u64)> {
         self.client.get().get_internal_payment_markers()
     }
+
+    // FIXME
+    pub async fn manual_operation_start(
+        &self,
+        operation_id: OperationId,
+        op_type: &str,
+        operation_meta: impl serde::Serialize + Debug,
+        sms: Vec<DynState<DynGlobalClientContext>>,
+    ) {
+        let db = self.client.get().db().clone();
+        let mut dbtx = db.begin_transaction().await;
+        self.client
+            .get()
+            .operation_log
+            .add_operation_log_entry(&mut dbtx.to_ref_nc(), operation_id, op_type, operation_meta)
+            .await;
+        self.client
+            .get()
+            .executor
+            .add_state_machines_dbtx(&mut dbtx.to_ref_nc(), sms)
+            .await
+            .unwrap();
+        dbtx.commit_tx().await;
+    }
 }
 
 /// Fedimint module client

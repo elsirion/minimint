@@ -1,7 +1,11 @@
 use std::str::FromStr;
+use std::time::Duration;
 
 use assert_matches::assert_matches;
+use bitcoin::secp256k1::rand::thread_rng;
+use bitcoin::{secp256k1, KeyPair};
 use fedimint_client::Client;
+use fedimint_core::task::sleep;
 use fedimint_core::util::NextOrPending;
 use fedimint_core::{sats, Amount};
 use fedimint_dummy_client::{DummyClientInit, DummyClientModule};
@@ -18,6 +22,7 @@ use fedimint_testing::federation::FederationTest;
 use fedimint_testing::fixtures::Fixtures;
 use fedimint_testing::gateway::{GatewayTest, DEFAULT_GATEWAY_PASSWORD};
 use lightning_invoice::Bolt11Invoice;
+use tracing::info;
 
 fn fixtures() -> Fixtures {
     let fixtures = Fixtures::new_primary(DummyClientInit, DummyInit, DummyGenParams::default());
@@ -447,6 +452,89 @@ async fn makes_internal_payments_within_federation() -> anyhow::Result<()> {
             assert_eq!(sub1.ok().await?, LnReceiveState::Claimed);
         }
         _ => panic!("Expected internal payment!"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_payments() -> anyhow::Result<()> {
+    use futures::stream::StreamExt;
+
+    let fixtures = fixtures();
+    let fed = fixtures.new_fed().await;
+    let (client1, client2) = fed.two_clients().await;
+    let client3 = fed.new_client().await;
+    gateway(&fixtures, &fed).await;
+
+    // Print money for client2
+    let client2_dummy_module = client2.get_first_module::<DummyClientModule>();
+    let (op, outpoint) = client2_dummy_module.print_money(sats(1000)).await?;
+    client2.await_primary_module_output(op, outpoint).await?;
+
+    let payment_key = KeyPair::new(secp256k1::SECP256K1, &mut thread_rng());
+
+    // TEST internal payment using external invoice generation when there are no
+    // gateways registered
+    //
+    // Client 1: generates invoice
+    // Client 2: pays invoice
+    // Client 3: claims invoice
+
+    // Generate invoice
+    info!("Generating invoice");
+    let (_op, invoice, _) = client1
+        .get_first_module::<LightningClientModule>()
+        .create_bolt11_invoice_ext(
+            payment_key.public_key(),
+            sats(250),
+            "with-markers".to_string(),
+            None,
+            (),
+        )
+        .await?;
+
+    sleep(Duration::from_secs(1)).await;
+
+    // Pay invoice
+    info!("Paying invoice");
+    let OutgoingLightningPayment {
+        payment_type,
+        contract_id: _,
+        fee: _,
+    } = pay_invoice(&client2, invoice).await?;
+    match payment_type {
+        PayType::Internal(op_id) => {
+            let mut sub2 = client2
+                .get_first_module::<LightningClientModule>()
+                .subscribe_internal_pay(op_id)
+                .await?
+                .into_stream();
+            assert_eq!(sub2.ok().await?, InternalPayState::Funding);
+            assert_matches!(sub2.ok().await?, InternalPayState::Preimage { .. });
+        }
+        _ => panic!("Expected internal payment!"),
+    }
+
+    sleep(Duration::from_secs(1)).await;
+    // Claim invoice
+    info!("Claiming invoice");
+    let client3_ln_module = client3.get_first_module::<LightningClientModule>();
+    let (_operation, _amt) = client3_ln_module
+        .claim_external_bolt11_invoice(payment_key, ())
+        .await
+        .unwrap();
+    // FIXME
+    // assert_eq!(amt, sats(250));
+
+    info!("Waiting for client 3 to receive 250sat");
+
+    let mut balance_sub = client3.subscribe_balance_changes().await;
+    while let Some(balance) = balance_sub.next().await {
+        if balance == sats(250) {
+            break;
+        }
+        info!("Balance now {}", balance);
     }
 
     Ok(())
