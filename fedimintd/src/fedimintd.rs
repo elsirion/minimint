@@ -36,6 +36,7 @@ use fedimint_wallet_server::common::config::{
 };
 use fedimint_wallet_server::WalletInit;
 use futures::FutureExt;
+use itertools::Itertools;
 use tracing::{debug, error, info};
 
 use crate::default_esplora_server;
@@ -345,12 +346,18 @@ impl Fedimintd {
 
         let task_group = root_task_group.clone();
         root_task_group.spawn_cancellable("main", async move {
+            let version_with_modules = format!(
+                "{} (modules={})"
+                self.code_version_str,
+                self.server_gens.kinds().iter().join(",") // Ordered list of supported modules
+            );
+
             match run(
                 self.opts,
                 &task_group,
                 self.server_gens,
                 self.server_gen_params,
-                self.code_version_str,
+                version_with_modules,
             )
             .await
             {
