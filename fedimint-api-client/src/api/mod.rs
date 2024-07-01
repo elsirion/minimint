@@ -387,8 +387,13 @@ pub trait FederationApiExt: IRawFederationApi {
                 Some(PeerResponse { peer, result }) => {
                     let result: PeerResult<PeerRet> =
                         result.map_err(PeerError::Rpc).and_then(|o| {
-                            serde_json::from_value::<PeerRet>(o.0)
-                                .map_err(|e| PeerError::ResponseDeserialization(e.into()))
+                            serde_json::from_value::<PeerRet>(o.0.clone()).map_err(|e| {
+                                warn!(
+                                    "Deserialization error: {}",
+                                    serde_json::to_string(&o.0).unwrap()
+                                );
+                                PeerError::ResponseDeserialization(e.into())
+                            })
                         });
 
                     let strategy_step = strategy.process(peer, result);

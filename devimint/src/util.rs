@@ -312,6 +312,16 @@ impl Command {
             .wait_with_output()
             .await?;
 
+        if !output.status.success() {
+            warn!(
+                "{} failed with status: {}, stderr: {}, stdout: {}",
+                self.command_debug(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+
         if output.status.success() != expect_success {
             bail!(
                 "{}\nstdout:\n{}\nstderr:\n{}\n",

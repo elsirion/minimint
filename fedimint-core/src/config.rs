@@ -153,6 +153,28 @@ where
     Ok(map)
 }
 
+fn optional_de_int_key<'de, D, K, V>(deserializer: D) -> Result<Option<BTreeMap<K, V>>, D::Error>
+where
+    D: Deserializer<'de>,
+    K: Eq + Ord + FromStr,
+    K::Err: Display,
+    V: Deserialize<'de>,
+{
+    let Some(string_map) = <Option<BTreeMap<String, V>>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    let map = string_map
+        .into_iter()
+        .map(|(key_str, value)| {
+            let key = K::from_str(&key_str).map_err(serde::de::Error::custom)?;
+            Ok((key, value))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+    Ok(Some(map))
+}
+
 /// Client config that cannot be cryptographically verified but is easier to
 /// parse by external tools
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -182,6 +204,7 @@ pub struct GlobalClientConfig {
     pub api_endpoints: BTreeMap<PeerId, PeerUrl>,
     /// Signing session keys for each federation member
     /// Optional for 0.3.x backwards compatibility
+    #[serde(deserialize_with = "optional_de_int_key")]
     pub broadcast_public_keys: Option<BTreeMap<PeerId, PublicKey>>,
     /// Core consensus version
     pub consensus_version: CoreConsensusVersion,

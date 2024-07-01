@@ -147,7 +147,7 @@ where
         self.map_err(|e| {
             let e = e.into();
             CliError {
-                error: e.to_string(),
+                error: format!("{:?}", e),
             }
         })
     }

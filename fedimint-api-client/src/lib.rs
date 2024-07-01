@@ -38,7 +38,7 @@ pub async fn download_from_invite_code(invite_code: &InviteCode) -> anyhow::Resu
         backon::FibonacciBuilder::default()
             .with_min_delay(Duration::from_millis(200))
             .with_max_delay(Duration::from_secs(5))
-            .with_max_times(10),
+            .with_max_times(2),
         || try_download_client_config(invite_code),
     )
     .await
