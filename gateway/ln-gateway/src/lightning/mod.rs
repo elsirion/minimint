@@ -213,9 +213,14 @@ impl dyn ILnRpcClient {
         } = self.info().await?;
         let node_pub_key = PublicKey::from_slice(&pub_key)
             .map_err(|e| GatewayError::InvalidMetadata(format!("Invalid node pubkey {e}")))?;
-        let network = Network::from_str(&network).map_err(|e| {
-            GatewayError::InvalidMetadata(format!("Invalid network {network}: {e}"))
-        })?;
+
+        let network = match network.as_str() {
+            "main" => Network::Bitcoin,
+            network => Network::from_str(network).map_err(|e| {
+                GatewayError::InvalidMetadata(format!("Invalid network {network}: {e}"))
+            })?,
+        };
+
         Ok((node_pub_key, alias, network, block_height, synced_to_chain))
     }
 }
