@@ -8,6 +8,7 @@ use fedimint_core::db::{
 };
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::epoch::ConsensusItem;
+use fedimint_core::module::ModuleCommon;
 use fedimint_core::session_outcome::{AcceptedItem, SignedSessionOutcome};
 use fedimint_core::util::BoxStream;
 use fedimint_core::{apply, async_trait_maybe_send, impl_db_lookup, impl_db_record, TransactionId};
@@ -107,9 +108,19 @@ pub enum ModuleHistoryItem {
     Output(DynOutput),
 }
 
+pub enum TypedModuleHistoryItem<M: ModuleCommon> {
+    ConsensusItem(M::ConsensusItem),
+    Input(M::Input),
+    Output(M::Output),
+}
+
 #[apply(async_trait_maybe_send!)]
 pub trait MigrationContextExt {
     async fn get_module_history_stream(&mut self) -> BoxStream<ModuleHistoryItem>;
+
+    async fn get_typed_module_history_stream<M: ModuleCommon>(
+        &mut self,
+    ) -> BoxStream<TypedModuleHistoryItem<M>>;
 }
 
 #[apply(async_trait_maybe_send!)]
@@ -158,6 +169,35 @@ impl MigrationContextExt for MigrationContext<'_> {
             );
 
         Box::pin(stream)
+    }
+
+    async fn get_typed_module_history_stream<M: ModuleCommon>(
+        &mut self,
+    ) -> BoxStream<TypedModuleHistoryItem<M>> {
+        Box::pin(self.get_module_history_stream().await.map(|item| {
+            match item {
+                ModuleHistoryItem::ConsensusItem(ci) => TypedModuleHistoryItem::ConsensusItem(
+                    ci.as_any()
+                        .downcast_ref::<M::ConsensusItem>()
+                        .expect("Wrong module type")
+                        .clone(),
+                ),
+                ModuleHistoryItem::Input(input) => TypedModuleHistoryItem::Input(
+                    input
+                        .as_any()
+                        .downcast_ref::<M::Input>()
+                        .expect("Wrong module type")
+                        .clone(),
+                ),
+                ModuleHistoryItem::Output(output) => TypedModuleHistoryItem::Output(
+                    output
+                        .as_any()
+                        .downcast_ref::<M::Output>()
+                        .expect("Wrong module type")
+                        .clone(),
+                ),
+            }
+        }))
     }
 }
 
