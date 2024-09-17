@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use fedimint_core::core::ModuleInstanceId;
-use fedimint_core::db::{CoreMigrationFn, DatabaseVersion, MODULE_GLOBAL_PREFIX};
+use fedimint_core::core::{DynInput, DynModuleConsensusItem, DynOutput, ModuleInstanceId};
+use fedimint_core::db::{
+    CoreMigrationFn, DatabaseVersion, IDatabaseTransactionOpsCoreTyped, MigrationContext,
+    MODULE_GLOBAL_PREFIX,
+};
 use fedimint_core::encoding::{Decodable, Encodable};
+use fedimint_core::epoch::ConsensusItem;
 use fedimint_core::session_outcome::{AcceptedItem, SignedSessionOutcome};
-use fedimint_core::{impl_db_lookup, impl_db_record, TransactionId};
+use fedimint_core::util::BoxStream;
+use fedimint_core::{apply, async_trait_maybe_send, impl_db_lookup, impl_db_record, TransactionId};
+use futures::StreamExt;
 use serde::Serialize;
 use strum_macros::EnumIter;
 
@@ -93,6 +99,66 @@ impl_db_lookup!(key = AlephUnitsKey, query_prefix = AlephUnitsPrefix);
 
 pub fn get_global_database_migrations() -> BTreeMap<DatabaseVersion, CoreMigrationFn> {
     BTreeMap::new()
+}
+
+pub enum ModuleHistoryItem {
+    ConsensusItem(DynModuleConsensusItem),
+    Input(DynInput),
+    Output(DynOutput),
+}
+
+#[apply(async_trait_maybe_send!)]
+pub trait MigrationContextExt {
+    async fn get_module_history_stream(&mut self) -> BoxStream<ModuleHistoryItem>;
+}
+
+#[apply(async_trait_maybe_send!)]
+impl MigrationContextExt for MigrationContext<'_> {
+    async fn get_module_history_stream(&mut self) -> BoxStream<ModuleHistoryItem> {
+        let module_instance_id = self
+            .module_instance_id()
+            .expect("module_instance_id must be set");
+
+        let stream = self
+            .__global_dbtx()
+            .find_by_prefix(&SignedSessionOutcomePrefix)
+            .await
+            .flat_map(
+                move |(_, signed_session_outcome): (_, SignedSessionOutcome)| {
+                    let session_items = signed_session_outcome
+                        .session_outcome
+                        .items
+                        .into_iter()
+                        .flat_map(move |item| match item.item {
+                            ConsensusItem::Transaction(tx) => tx
+                                .inputs
+                                .into_iter()
+                                .filter_map(|input| {
+                                    (input.module_instance_id() == module_instance_id)
+                                        .then_some(ModuleHistoryItem::Input(input))
+                                })
+                                .chain(tx.outputs.into_iter().filter_map(|output| {
+                                    (output.module_instance_id() == module_instance_id)
+                                        .then_some(ModuleHistoryItem::Output(output))
+                                }))
+                                .collect::<Vec<_>>(),
+                            ConsensusItem::Module(mci) => {
+                                if mci.module_instance_id() == module_instance_id {
+                                    vec![ModuleHistoryItem::ConsensusItem(mci)]
+                                } else {
+                                    vec![]
+                                }
+                            }
+                            ConsensusItem::Default { .. } => {
+                                unreachable!("We never save unknown CIs on the server side")
+                            }
+                        });
+                    futures::stream::iter(session_items)
+                },
+            );
+
+        Box::pin(stream)
+    }
 }
 
 #[cfg(test)]
