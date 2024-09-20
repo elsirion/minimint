@@ -656,6 +656,7 @@ pub trait ServerModuleInit: ModuleInit + Sized {
     /// Initialize the [`DynServerModule`] instance from its config
     async fn init(&self, args: &ServerModuleInitArgs<Self>) -> anyhow::Result<DynServerModule>;
 
+    // TODO: move to IServerModuleInit impl
     fn parse_params(&self, params: &ConfigGenModuleParams) -> anyhow::Result<Self::Params> {
         params.to_typed::<Self::Params>()
     }
@@ -671,6 +672,19 @@ pub trait ServerModuleInit: ModuleInit + Sized {
         peer: &PeerHandle,
         params: &ConfigGenModuleParams,
     ) -> DkgResult<ServerModuleConfig>;
+
+    // TODO: make error typed/introduce error codes
+    /// Checks if config gen params are within sane bounds. This function not
+    /// returning an error doesn't mean DKG will succeed, but is supposed to
+    /// catch obvious mistakes early on.
+    ///
+    /// # Async
+    /// Please leave the function async in case we want to do a quick API call
+    /// to validate the params.
+    async fn validate_params(&self, params: &ConfigGenModuleParams) -> anyhow::Result<()> {
+        self.parse_params(params)?;
+        Ok(())
+    }
 
     fn validate_config(&self, identity: &PeerId, config: ServerModuleConfig) -> anyhow::Result<()>;
 
