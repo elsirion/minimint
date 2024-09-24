@@ -357,17 +357,14 @@ pub(crate) async fn run_event_log_ordering_task(
     debug!(target: LOG_CLIENT_EVENT_LOG, "Event log ordering task finished");
 }
 
-pub async fn handle_events<F, R, K, V>(
+pub async fn handle_events<F, R, K>(
     db: Database,
     pos_key: &K,
     mut log_event_added: watch::Receiver<()>,
     call_fn: F,
 ) -> anyhow::Result<()>
 where
-    K: DatabaseKey + DatabaseRecord + MaybeSend + MaybeSync,
-    K: DatabaseRecord<Value = V>,
-    // Note: Into and From are a workaround for https://github.com/rust-lang/rust/issues/20041
-    V: Into<EventLogId> + From<EventLogId> + Default + MaybeSend + MaybeSync,
+    K: DatabaseRecord<Value = EventLogId> + DatabaseKey + MaybeSend + MaybeSync,
     F: Fn(&mut DatabaseTransaction<NonCommittable>, EventLogEntry) -> R,
     R: Future<Output = anyhow::Result<()>>,
 {
@@ -376,8 +373,7 @@ where
         .await
         .get_value(pos_key)
         .await
-        .unwrap_or_default()
-        .into();
+        .unwrap_or_default();
     loop {
         let mut dbtx = db.begin_transaction().await;
 
@@ -385,7 +381,7 @@ where
             (call_fn)(&mut dbtx.to_ref_nc(), event).await?;
 
             next_key = next_key.next();
-            dbtx.insert_entry(pos_key, &V::from(next_key)).await;
+            dbtx.insert_entry(pos_key, &next_key).await;
 
             dbtx.commit_tx().await;
         } else if log_event_added.changed().await.is_err() {

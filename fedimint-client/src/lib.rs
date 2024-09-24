@@ -2135,11 +2135,9 @@ impl Client {
         .await;
     }
 
-    pub async fn handle_events<F, R, K, V>(&self, pos_key: &K, call_fn: F) -> anyhow::Result<()>
+    pub async fn handle_events<F, R, K>(&self, pos_key: &K, call_fn: F) -> anyhow::Result<()>
     where
-        K: DatabaseKey + DatabaseRecord + MaybeSend + MaybeSync,
-        K: DatabaseRecord<Value = V>,
-        V: Into<EventLogId> + From<EventLogId> + Default + MaybeSend + MaybeSync,
+        K: DatabaseRecord<Value = EventLogId> + DatabaseKey + MaybeSend + MaybeSync,
         F: Fn(&mut DatabaseTransaction<NonCommittable>, EventLogEntry) -> R,
         R: Future<Output = anyhow::Result<()>>,
     {
