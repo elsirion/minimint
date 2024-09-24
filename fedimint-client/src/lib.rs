@@ -2810,6 +2810,8 @@ impl ClientBuilder {
                 .await;
             dbtx.commit_tx().await;
         }
+        let (log_event_added_tx, log_event_added_rx) = watch::channel(());
+        let (log_ordering_wakeup_tx, log_ordering_wakeup_rx) = watch::channel(());
 
         let executor = {
             let mut executor_builder = Executor::builder();
@@ -2824,7 +2826,12 @@ impl ClientBuilder {
                 executor_builder.with_valid_module_id(*module_instance_id);
             }
 
-            executor_builder.build(db.clone(), notifier, task_group.clone())
+            executor_builder.build(
+                db.clone(),
+                notifier,
+                task_group.clone(),
+                log_ordering_wakeup_tx.clone(),
+            )
         };
 
         let recovery_receiver_init_val = module_recovery_progress_receivers
@@ -2833,9 +2840,6 @@ impl ClientBuilder {
             .collect::<BTreeMap<_, _>>();
         let (client_recovery_progress_sender, client_recovery_progress_receiver) =
             watch::channel(recovery_receiver_init_val);
-
-        let (log_event_added_tx, log_event_added_rx) = watch::channel(());
-        let (log_ordering_wakeup_tx, log_ordering_wakeup_rx) = watch::channel(());
 
         let client_inner = Arc::new(Client {
             config: RwLock::new(config.clone()),
