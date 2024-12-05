@@ -13,6 +13,8 @@ pub mod db;
 pub mod incoming;
 pub mod pay;
 pub mod receive;
+/// Implements recurring payment codes (e.g. LNURL, BOLT12)
+pub mod recurring;
 
 use std::collections::BTreeMap;
 use std::iter::once;
@@ -1443,6 +1445,10 @@ impl LightningClientModule {
 
     /// Scan unspent incoming contracts for a payment hash that matches a
     /// tweaked keys in the `indices` vector
+    #[deprecated(
+        since = "0.5.0",
+        note = "Please use `scan_receive_for_user_tweaked` instead"
+    )]
     pub async fn scan_receive_for_user_tweaked<M: Serialize + Send + Sync + Clone>(
         &self,
         key_pair: Keypair,

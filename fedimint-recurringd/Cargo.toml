@@ -1,0 +1,24 @@
+[package]
+name = "fedimint-recurringd"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true}
+clap = { workspace = true }
+fedimint-api-client = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-client = { workspace = true }
+fedimint-ln-client = { workspace = true }
+fedimint-ln-common = { workspace = true }
+fedimint-mint-client = { workspace = true }
+fedimint-rocksdb = { workspace = true }
+futures = { workspace = true }
+lightning-invoice = { workspace = true }
+lnurl-rs = { version = "0.9.0", default-features = false }
+lockable = "0.1.1"
+tokio = { workspace = true }
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = { workspace = true }
