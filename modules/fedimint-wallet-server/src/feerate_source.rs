@@ -69,6 +69,16 @@ impl FetchJson {
 
         Ok(Self { filter, source_url })
     }
+
+    fn apply_filter(&self, value: serde_json::Value) -> Result<Val> {
+        let inputs = RcIter::new(core::iter::empty());
+
+        let mut out = self.filter.run((Ctx::new([], &inputs), Val::from(value)));
+
+        out.next()
+            .ok_or_else(|| anyhow!("Missing value after applying filter"))?
+            .map_err(|e| anyhow!("Jaq err: {e}"))
+    }
 }
 
 #[apply(async_trait_maybe_send!)]
@@ -87,16 +97,7 @@ impl FeeRateSource for FetchJson {
 
         trace!(target: LOG_MODULE_WALLET, name = %self.name(), resp = ?json_resp, "Got json response");
 
-        let inputs = RcIter::new(core::iter::empty());
-
-        let mut out = self
-            .filter
-            .run((Ctx::new([], &inputs), Val::from(json_resp)));
-
-        let val = out
-            .next()
-            .ok_or_else(|| anyhow!("Missing value after applying filter"))?
-            .map_err(|e| anyhow!("Jaq err: {e}"))?;
+        let val = self.apply_filter(json_resp)?;
 
         let rate = match val {
             Val::Float(rate) => rate,
@@ -122,5 +123,38 @@ impl FeeRateSource for FetchJson {
             #[allow(clippy::cast_sign_loss)]
             sats_per_kvb: (rate * 1000.0).floor() as u64,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::rc::Rc;
+
+    use jaq_json::Val;
+
+    use crate::feerate_source::FetchJson;
+
+    fn val_str(s: &str) -> Val {
+        Val::Str(Rc::new(s.to_owned()))
+    }
+
+    #[test]
+    fn test_filter() {
+        let source_id = FetchJson::from_str("https://example.com#.").expect("Failed to parse url");
+        assert_eq!(
+            source_id
+                .apply_filter(serde_json::json!("foo"))
+                .expect("Failed to apply filter"),
+            val_str("foo")
+        );
+
+        let source_access_member =
+            FetchJson::from_str("https://example.com#.[0].foo").expect("Failed to parse url");
+        assert_eq!(
+            source_access_member
+                .apply_filter(serde_json::json!([{"foo": "bar"}, 1, 2, 3]))
+                .expect("Failed to apply filter"),
+            val_str("bar")
+        );
     }
 }
