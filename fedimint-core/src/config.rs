@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+use std::io::{Cursor, Error, Read, Write};
 use std::ops::Mul;
 use std::path::Path;
 use std::str::FromStr;
 
-use anyhow::{bail, format_err, Context};
+use anyhow::{anyhow, bail, format_err, Context};
 use bitcoin::hashes::sha256::{Hash as Sha256, HashEngine};
 use bitcoin::hashes::{hex, sha256, Hash as BitcoinHash};
 use bls12_381::Scalar;
@@ -26,7 +27,7 @@ use threshold_crypto::{G1Projective, G2Projective};
 use tracing::warn;
 
 use crate::core::DynClientConfig;
-use crate::encoding::Decodable;
+use crate::encoding::{Decodable, DecodeError};
 use crate::module::{
     CoreConsensusVersion, DynCommonModuleInit, IDynCommonModuleInit, ModuleConsensusVersion,
 };
@@ -928,13 +929,78 @@ pub enum DkgMessage<G: DkgGroup> {
     Extract(#[serde(with = "serde_commit")] Vec<G>),
 }
 
+impl<G: DkgGroup> Encodable for DkgMessage<G> {
+    fn consensus_encode<W: Write>(&self, writer: &mut W) -> Result<usize, Error> {
+        let idx = match self {
+            Self::HashedCommit(_) => 0u64,
+            Self::Commit(_) => 1,
+            Self::Share(_, _) => 2,
+            Self::Extract(_) => 3,
+        };
+        let data = match self {
+            Self::HashedCommit(hc) => hc.consensus_encode_to_vec(),
+            Self::Commit(c) => c.consensus_encode_to_vec(),
+            Self::Share(s1, s2) => (s1, s2).consensus_encode_to_vec(),
+            Self::Extract(e) => e.consensus_encode_to_vec(),
+        };
+
+        let mut len = 0;
+        len += idx.consensus_encode(writer)?;
+        len += data.consensus_encode(writer)?;
+
+        Ok(len)
+    }
+}
+
+impl<G: DkgGroup> Decodable for DkgMessage<G> {
+    fn consensus_decode_partial<R: Read>(
+        r: &mut R,
+        modules: &ModuleDecoderRegistry,
+    ) -> Result<Self, DecodeError> {
+        let idx = u64::consensus_decode_partial(r, modules)?;
+        let data = Vec::<u8>::consensus_decode_partial(r, modules)?;
+
+        let mut reader = Cursor::new(data);
+        let msg = match idx {
+            0 => Self::HashedCommit(Sha256::consensus_decode_partial(&mut reader, modules)?),
+            1 => Self::Commit(Vec::<G>::consensus_decode_partial(&mut reader, modules)?),
+            2 => {
+                let (s1, s2) = (
+                    Scalar::consensus_decode_partial(&mut reader, modules)?,
+                    Scalar::consensus_decode_partial(&mut reader, modules)?,
+                );
+                Self::Share(s1, s2)
+            }
+            3 => Self::Extract(Vec::<G>::consensus_decode_partial(&mut reader, modules)?),
+            _ => {
+                return Err(DecodeError::new_custom(anyhow!(
+                    "Invalid DkgMessage index: {idx}"
+                )))
+            }
+        };
+
+        Ok(msg)
+    }
+}
+
 /// Defines a group (e.g. G1 or G2) that we can generate keys for
 pub trait DkgGroup:
-    Group + Mul<Scalar, Output = Self> + Curve + GroupEncoding + SGroup + Unpin
+    Group + Mul<Scalar, Output = Self> + Curve + GroupEncoding + SGroup + Unpin + Encodable + Decodable
 {
 }
 
-impl<T: Group + Mul<Scalar, Output = T> + Curve + GroupEncoding + SGroup + Unpin> DkgGroup for T {}
+impl<
+        T: Group
+            + Mul<Scalar, Output = T>
+            + Curve
+            + GroupEncoding
+            + SGroup
+            + Unpin
+            + Encodable
+            + Decodable,
+    > DkgGroup for T
+{
+}
 
 /// Handling the Group serialization with a wrapper
 mod serde_commit {
