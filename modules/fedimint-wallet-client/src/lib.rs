@@ -25,7 +25,7 @@ use std::future;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use anyhow::{anyhow, bail, Context as AnyhowContext};
+use anyhow::{anyhow, bail, ensure, Context as AnyhowContext};
 use async_stream::stream;
 use backup::WalletModuleBackup;
 use bitcoin::address::NetworkUnchecked;
@@ -632,6 +632,31 @@ impl WalletClientModule {
 
     pub async fn btc_tx_has_no_size_limit(&self) -> FederationResult<bool> {
         Ok(self.module_api.module_consensus_version().await? >= ModuleConsensusVersion::new(2, 2))
+    }
+
+    /// Allocates a deposit address controlled by the federation, guaranteeing
+    /// safe handling of deposits.
+    ///
+    /// This method ensures that the federation can process deposits to the
+    /// allocated address without issues, even for on-chain transactions
+    /// exceeding `ALEPH_BFT_UNIT_BYTE_LIMIT`.
+    pub async fn safe_allocate_deposit_address<M>(
+        &self,
+        extra_meta: M,
+    ) -> anyhow::Result<(OperationId, Address, TweakIdx)>
+    where
+        M: Serialize + MaybeSend + MaybeSync,
+    {
+        let module_consensus_version = self.module_api.module_consensus_version().await?;
+
+        ensure!(
+            SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION <= module_consensus_version,
+            "Wallet module consensus version is too low. Required: {:?}, Actual: {:?}",
+            SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION,
+            module_consensus_version
+        );
+
+        self.allocate_deposit_address_expert_only(extra_meta).await
     }
 
     /// Allocates a deposit address that is controlled by the federation.
