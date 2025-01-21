@@ -72,7 +72,7 @@ use rand::{thread_rng, Rng};
 use secp256k1::Keypair;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use tokio::sync::watch;
+use tokio::sync::{watch, OnceCell};
 use tracing::{debug, instrument};
 
 use crate::api::WalletFederationApi;
@@ -647,14 +647,20 @@ impl WalletClientModule {
     where
         M: Serialize + MaybeSend + MaybeSync,
     {
-        let module_consensus_version = self.module_api.module_consensus_version().await?;
+        static IS_UPGRADED_TO_2_2: OnceCell<()> = OnceCell::const_new();
 
-        ensure!(
-            SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION <= module_consensus_version,
-            "Wallet module consensus version is too low. Required: {:?}, Actual: {:?}",
-            SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION,
-            module_consensus_version
-        );
+        IS_UPGRADED_TO_2_2
+            .get_or_try_init(|| async {
+                let module_consensus_version = self.module_api.module_consensus_version().await?;
+                ensure!(
+                    SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION <= module_consensus_version,
+                    "Wallet module consensus version is too low. Required: {:?}, Actual: {:?}",
+                    SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION,
+                    module_consensus_version
+                );
+                Ok(())
+            })
+            .await?;
 
         self.allocate_deposit_address_expert_only(extra_meta).await
     }
