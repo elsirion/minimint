@@ -18,7 +18,7 @@ use futures::future::{self, Either};
 use inner::TaskGroupInner;
 use thiserror::Error;
 use tokio::sync::{oneshot, watch};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::runtime;
 // TODO: stop using `task::*`, and use `runtime::*` in the code
@@ -152,6 +152,45 @@ impl TaskGroup {
                 debug!(target: LOG_TASK, "Starting task {name}");
                 let r = f(handle).await;
                 debug!(target: LOG_TASK, "Finished task {name}");
+                let _ = tx.send(r);
+            }
+        });
+        self.inner.add_join_handle(name, handle);
+        guard.completed = true;
+
+        rx
+    }
+
+    /// This is a version of [`Self::spawn`] that uses less noisy logging level
+    ///
+    /// Meant for tasks that are spawned often enough to not be as interesting.
+    pub fn spawn_silent<Fut, R>(
+        &self,
+        name: impl Into<String>,
+        f: impl FnOnce(TaskHandle) -> Fut + MaybeSend + 'static,
+    ) -> oneshot::Receiver<R>
+    where
+        Fut: Future<Output = R> + MaybeSend + 'static,
+        R: MaybeSend + 'static,
+    {
+        // Unfortunately this is exact copy of [`Self::spawn`] because logging levels
+        // are static, and can't be parametrized at runtime, AFAIA. --dpc
+        let name = name.into();
+        let mut guard = TaskPanicGuard {
+            name: name.clone(),
+            inner: self.inner.clone(),
+            completed: false,
+        };
+        let handle = self.make_handle();
+
+        let (tx, rx) = oneshot::channel();
+        let handle = crate::runtime::spawn(&name, {
+            let name = name.clone();
+            async move {
+                // if receiver is not interested, just drop the message
+                trace!(target: LOG_TASK, "Starting task {name}");
+                let r = f(handle).await;
+                trace!(target: LOG_TASK, "Finished task {name}");
                 let _ = tx.send(r);
             }
         });
