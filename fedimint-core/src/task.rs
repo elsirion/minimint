@@ -18,7 +18,7 @@ use futures::future::{self, Either};
 use inner::TaskGroupInner;
 use thiserror::Error;
 use tokio::sync::{oneshot, watch};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, event, info, trace, Level};
 
 use crate::runtime;
 // TODO: stop using `task::*`, and use `runtime::*` in the code
@@ -127,7 +127,10 @@ impl TaskGroup {
         });
     }
 
-    pub fn spawn<Fut, R>(
+    /// Spawn a task and log its start/end with a specific log level
+    ///
+    /// See [`usize_log_levels`] for the log levels.
+    fn spawn_with_log_level<Fut, R, const LogLevel: usize>(
         &self,
         name: impl Into<String>,
         f: impl FnOnce(TaskHandle) -> Fut + MaybeSend + 'static,
@@ -136,6 +139,17 @@ impl TaskGroup {
         Fut: Future<Output = R> + MaybeSend + 'static,
         R: MaybeSend + 'static,
     {
+        const fn usize_to_level(level: usize) -> Level {
+            match level {
+                usize_log_levels::TRACE => Level::TRACE,
+                usize_log_levels::DEBUG => Level::DEBUG,
+                usize_log_levels::INFO => Level::INFO,
+                usize_log_levels::WARN => Level::WARN,
+                usize_log_levels::ERROR => Level::ERROR,
+                _ => panic!("Invalid log level"),
+            }
+        }
+
         let name = name.into();
         let mut guard = TaskPanicGuard {
             name: name.clone(),
@@ -149,9 +163,9 @@ impl TaskGroup {
             let name = name.clone();
             async move {
                 // if receiver is not interested, just drop the message
-                debug!(target: LOG_TASK, "Starting task {name}");
+                event!(target: LOG_TASK, usize_to_level(LogLevel), "Starting task {name}");
                 let r = f(handle).await;
-                debug!(target: LOG_TASK, "Finished task {name}");
+                event!(target: LOG_TASK, usize_to_level(LogLevel), "Finished task {name}");
                 let _ = tx.send(r);
             }
         });
@@ -159,6 +173,19 @@ impl TaskGroup {
         guard.completed = true;
 
         rx
+    }
+
+    /// Spawn a task as part of the task group
+    pub fn spawn<Fut, R>(
+        &self,
+        name: impl Into<String>,
+        f: impl FnOnce(TaskHandle) -> Fut + MaybeSend + 'static,
+    ) -> oneshot::Receiver<R>
+    where
+        Fut: Future<Output = R> + MaybeSend + 'static,
+        R: MaybeSend + 'static,
+    {
+        self.spawn_with_log_level::<_, _, usize_log_levels::DEBUG>(name, f)
     }
 
     /// This is a version of [`Self::spawn`] that uses less noisy logging level
@@ -173,31 +200,7 @@ impl TaskGroup {
         Fut: Future<Output = R> + MaybeSend + 'static,
         R: MaybeSend + 'static,
     {
-        // Unfortunately this is exact copy of [`Self::spawn`] because logging levels
-        // are static, and can't be parametrized at runtime, AFAIA. --dpc
-        let name = name.into();
-        let mut guard = TaskPanicGuard {
-            name: name.clone(),
-            inner: self.inner.clone(),
-            completed: false,
-        };
-        let handle = self.make_handle();
-
-        let (tx, rx) = oneshot::channel();
-        let handle = crate::runtime::spawn(&name, {
-            let name = name.clone();
-            async move {
-                // if receiver is not interested, just drop the message
-                trace!(target: LOG_TASK, "Starting task {name}");
-                let r = f(handle).await;
-                trace!(target: LOG_TASK, "Finished task {name}");
-                let _ = tx.send(r);
-            }
-        });
-        self.inner.add_join_handle(name, handle);
-        guard.completed = true;
-
-        rx
+        self.spawn_with_log_level::<_, _, usize_log_levels::TRACE>(name, f)
     }
 
     /// Spawn a task that will get cancelled automatically on `TaskGroup`
@@ -451,6 +454,25 @@ pub struct Cancelled;
 /// Operation that can potentially get cancelled returning no result (e.g.
 /// program shutdown).
 pub type Cancellable<T> = std::result::Result<T, Cancelled>;
+
+/// Integer constants representing tracing log levels.
+///
+/// Since const generics don't support passing in more complex types yet, we
+/// need to pass in the log level as a `usize` when we want to make a function
+/// generic over its log level without a runtime performance penalty (see
+/// [`super::TaskGroup::spawn_with_log_level`]). Once more complex types are
+/// supported by Rust we should instead pass in the [`tracing::Level`] directly.
+///
+/// See also:
+/// - https://doc.rust-lang.org/beta/unstable-book/language-features/adt-const-params.html
+/// - https://internals.rust-lang.org/t/c-like-enums-and-adt-const-params/16602
+mod usize_log_levels {
+    pub const TRACE: usize = 0;
+    pub const DEBUG: usize = 1;
+    pub const INFO: usize = 2;
+    pub const WARN: usize = 3;
+    pub const ERROR: usize = 4;
+}
 
 #[cfg(test)]
 mod tests {
