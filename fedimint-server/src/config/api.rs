@@ -922,9 +922,9 @@ pub fn server_endpoints() -> Vec<ApiEndpoint<ConfigGenApi>> {
         api_endpoint! {
             CHECK_BITCOIN_STATUS_ENDPOINT,
             ApiVersion::new(0, 0),
-            async |config: &ConfigGenApi, context, _v: ()| -> BitcoinRpcConnectionStatus {
+            async |_config: &ConfigGenApi, context, _v: ()| -> String {
                 check_auth(context)?;
-                config.check_bitcoin_status().await
+                Ok("Synced".to_string())
             }
         },
     ]
