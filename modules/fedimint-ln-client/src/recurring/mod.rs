@@ -2,12 +2,14 @@ pub mod api;
 
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
+use std::time::SystemTime;
 
 use bitcoin::hashes::sha256;
 use fedimint_core::BitcoinHash;
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::secp256k1::{Keypair, PublicKey};
+use fedimint_core::util::SafeUrl;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -113,4 +115,14 @@ pub enum RecurringPaymentError {
     JoiningFederationFailed(anyhow::Error),
     #[error("Error registering with recurring payment service: {0}")]
     Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Clone, Encodable, Decodable, Serialize)]
+pub struct RecurringPaymentCodeEntry {
+    pub protocol: RecurringPaymentProtocol,
+    pub root_keypair: Keypair,
+    pub code: String,
+    pub recurringd_api: SafeUrl,
+    pub last_derivation_index: u64,
+    pub creation_time: SystemTime,
 }

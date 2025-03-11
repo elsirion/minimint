@@ -1301,6 +1301,9 @@ mod fedimint_migration_tests {
                             );
                             info!("Validated LightningGateways");
                         }
+                        fedimint_ln_client::db::DbKeyPrefix::RecurringPaymentKey => {
+                            unimplemented!()
+                        }
                         fedimint_ln_client::db::DbKeyPrefix::CoreInternalReservedStart
                         | fedimint_ln_client::db::DbKeyPrefix::ExternalReservedStart
                         | fedimint_ln_client::db::DbKeyPrefix::CoreInternalReservedEnd => {}
