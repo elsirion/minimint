@@ -129,6 +129,7 @@ impl ModuleInit for MintInit {
 
 #[apply(async_trait_maybe_send!)]
 impl ServerModuleInit for MintInit {
+    type Module = Mint;
     type Params = MintGenParams;
 
     fn versions(&self, _core: CoreConsensusVersion) -> &[ModuleConsensusVersion] {
